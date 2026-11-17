@@ -85,3 +85,16 @@ pub fn icon(name: &str) -> Svg {
 pub fn app_mark() -> Svg {
     icon("opendolby")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_assets_resolve_independently_of_cwd() {
+        let assets = application_assets();
+        assert!(assets.load("icons/house.svg").unwrap().is_some());
+        assert!(assets.load("opendolby.svg").unwrap().is_some());
+        assert!(assets.load("icons/nonexistent-icon.svg").unwrap().is_none());
+    }
+}
