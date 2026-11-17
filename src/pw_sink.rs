@@ -1,14 +1,20 @@
-use crate::dsp::DolbyProcessor;
-use anyhow::{Context, Result};
+use crate::dsp::{DolbyProcessor, RuntimeControls};
+use anyhow::{anyhow, Context, Result};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
 use pw::spa::pod::Pod;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+const VIRTUAL_SINK_NAME: &str = "dolby_atmos_rust";
+const VIRTUAL_OUT_NAME: &str = "dolby_atmos_rust_out";
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Lock-free SPSC ring buffer for interleaved stereo f32 frames.
 struct RingBuf {
@@ -54,16 +60,44 @@ impl RingBuf {
     }
 }
 
+/// Lock-free atomic live controls shared between the UI/control thread and the PipeWire mainloop.
+struct ControlAtomics {
+    bypass: AtomicBool,
+    level_match: AtomicBool,
+    surround_amount: AtomicU32,
+    dialog_amount: AtomicU32,
+}
+
+impl ControlAtomics {
+    fn new() -> Self {
+        Self {
+            bypass: AtomicBool::new(false),
+            level_match: AtomicBool::new(true),
+            surround_amount: AtomicU32::new(1.0_f32.to_bits()),
+            dialog_amount: AtomicU32::new(1.0_f32.to_bits()),
+        }
+    }
+
+    fn snapshot(&self) -> RuntimeControls {
+        RuntimeControls {
+            bypass: self.bypass.load(Ordering::Relaxed),
+            level_match: self.level_match.load(Ordering::Relaxed),
+            surround_amount: f32::from_bits(self.surround_amount.load(Ordering::Relaxed)),
+            dialog_amount: f32::from_bits(self.dialog_amount.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 /// Handle for controlling a running PipeWire Dolby virtual sink from another thread.
 pub struct EngineHandle {
     pending_proc: Arc<Mutex<Option<DolbyProcessor>>>,
-    bypass: Arc<AtomicBool>,
+    controls: Arc<ControlAtomics>,
     quit: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
 impl EngineHandle {
-    /// Hot-swap the active DSP processor on the next audio callback without blocking.
+    /// Hot-swap the active DSP processor on the PipeWire mainloop timer without blocking audio.
     pub fn set_processor(&self, processor: DolbyProcessor) {
         if let Ok(mut guard) = self.pending_proc.lock() {
             *guard = Some(processor);
@@ -72,7 +106,28 @@ impl EngineHandle {
 
     /// Toggle DSP bypass cleanly without tearing down the PipeWire node.
     pub fn set_bypass(&self, bypass: bool) {
-        self.bypass.store(bypass, Ordering::Relaxed);
+        self.controls.bypass.store(bypass, Ordering::Relaxed);
+    }
+
+    /// Toggle loudness/level matching during bypass/processing.
+    pub fn set_level_match(&self, level_match: bool) {
+        self.controls
+            .level_match
+            .store(level_match, Ordering::Relaxed);
+    }
+
+    /// Set surround amount (0.0..=1.0+).
+    pub fn set_surround_amount(&self, amount: f32) {
+        self.controls
+            .surround_amount
+            .store(amount.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Set dialog enhancement amount (0.0..=1.0+).
+    pub fn set_dialog_amount(&self, amount: f32) {
+        self.controls
+            .dialog_amount
+            .store(amount.to_bits(), Ordering::Relaxed);
     }
 
     /// Request the PipeWire main loop to quit and wait for the audio thread to exit.
@@ -105,13 +160,26 @@ pub fn detect_hardware_speaker_sink() -> Option<String> {
             let mut parts = line.split('"');
             let _ = parts.next();
             if let Some(name) = parts.next() {
-                if !name.is_empty() {
+                if !name.is_empty() && name != VIRTUAL_SINK_NAME && name != VIRTUAL_OUT_NAME {
                     return Some(name.to_string());
                 }
             }
         }
     }
     None
+}
+
+fn validate_target_sink(target: Option<String>) -> Result<String> {
+    let target = target.ok_or_else(|| {
+        anyhow!("Failed to resolve hardware speaker sink target; refusing to start without a valid target")
+    })?;
+    if target == VIRTUAL_SINK_NAME || target == VIRTUAL_OUT_NAME {
+        return Err(anyhow!(
+            "Refusing to target virtual sink '{}' (would cause self-loop)",
+            target
+        ));
+    }
+    Ok(target)
 }
 
 /// Spawn the PipeWire virtual sink on a dedicated thread and return a control handle.
@@ -121,11 +189,11 @@ pub fn spawn_pipewire_sink(
     sample_rate: u32,
 ) -> Result<EngineHandle> {
     let pending_proc = Arc::new(Mutex::new(None));
-    let bypass = Arc::new(AtomicBool::new(false));
+    let controls = Arc::new(ControlAtomics::new());
     let quit = Arc::new(AtomicBool::new(false));
 
     let pending_c = Arc::clone(&pending_proc);
-    let bypass_c = Arc::clone(&bypass);
+    let controls_c = Arc::clone(&controls);
     let quit_c = Arc::clone(&quit);
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
@@ -137,7 +205,7 @@ pub fn spawn_pipewire_sink(
                 target_sink,
                 sample_rate,
                 pending_c,
-                bypass_c,
+                controls_c,
                 quit_c,
                 Some(tx.clone()),
             ) {
@@ -146,12 +214,23 @@ pub fn spawn_pipewire_sink(
         })
         .context("Failed to spawn PipeWire thread")?;
 
-    rx.recv()
-        .context("PipeWire thread exited before initialization")??;
+    match rx.recv_timeout(STARTUP_TIMEOUT) {
+        Ok(res) => res?,
+        Err(RecvTimeoutError::Timeout) => {
+            quit.store(true, Ordering::Relaxed);
+            return Err(anyhow!(
+                "Timed out after {:?} waiting for PipeWire virtual sink initialization",
+                STARTUP_TIMEOUT
+            ));
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            return Err(anyhow!("PipeWire thread exited before initialization"));
+        }
+    }
 
     Ok(EngineHandle {
         pending_proc,
-        bypass,
+        controls,
         quit,
         join: Some(join),
     })
@@ -167,7 +246,7 @@ pub fn run_pipewire_sink(
         target_sink,
         sample_rate,
         Arc::new(Mutex::new(None)),
-        Arc::new(AtomicBool::new(false)),
+        Arc::new(ControlAtomics::new()),
         Arc::new(AtomicBool::new(false)),
         None,
     )
@@ -178,10 +257,12 @@ fn run_pipewire_sink_inner(
     target_sink: Option<String>,
     sample_rate: u32,
     pending_proc: Arc<Mutex<Option<DolbyProcessor>>>,
-    bypass: Arc<AtomicBool>,
+    controls: Arc<ControlAtomics>,
     quit: Arc<AtomicBool>,
     ready_tx: Option<std::sync::mpsc::Sender<Result<()>>>,
 ) -> Result<()> {
+    let resolved_target = validate_target_sink(target_sink.or_else(detect_hardware_speaker_sink))?;
+
     pw::init();
 
     let mainloop =
@@ -190,15 +271,17 @@ fn run_pipewire_sink_inner(
         .context("Failed to create PipeWire Context")?;
     let core = context.connect(None).context("Failed to connect to PipeWire daemon")?;
 
-    // 16384 stereo samples (~170ms max capacity)
-    let ring = Arc::new(RefCell::new(RingBuf::new(32768)));
-    let proc_state = Arc::new(RefCell::new(processor));
+    // Non-hard-RT: stream callbacks are serialized on the PipeWire mainloop thread
+    // (RT_PROCESS is intentionally omitted), so Rc<RefCell<...>> is sound.
+    // 16384 stereo frames = 32768 f32 samples (~341ms @ 48kHz).
+    let ring = Rc::new(RefCell::new(RingBuf::new(32768)));
+    let proc_state = Rc::new(RefCell::new(processor));
 
     let in_props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::MEDIA_CLASS => "Audio/Sink",
-        *pw::keys::NODE_NAME => "dolby_atmos_rust",
+        *pw::keys::NODE_NAME => VIRTUAL_SINK_NAME,
         *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust (ALC294)",
         *pw::keys::AUDIO_CHANNELS => "2",
         "audio.position" => "FL,FR",
@@ -208,37 +291,27 @@ fn run_pipewire_sink_inner(
     let in_stream = pw::stream::StreamBox::new(&core, "dolby-rs-sink", in_props)
         .context("Failed to create PipeWire virtual sink stream")?;
 
-    let resolved_target = target_sink.or_else(detect_hardware_speaker_sink);
-
     let mut out_props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::MEDIA_ROLE => "Music",
-        *pw::keys::NODE_NAME => "dolby_atmos_rust_out",
+        *pw::keys::NODE_NAME => VIRTUAL_OUT_NAME,
         *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust Output",
         *pw::keys::AUDIO_CHANNELS => "2",
         "audio.position" => "FL,FR",
         "node.dont-reconnect" => "true",
     };
-    if let Some(ref target) = resolved_target {
-        out_props.insert("target.object", target.as_str());
-    }
+    out_props.insert("target.object", resolved_target.as_str());
 
     let out_stream = pw::stream::StreamBox::new(&core, "dolby-rs-out", out_props)
         .context("Failed to create PipeWire output stream")?;
 
-    let ring_in = Arc::clone(&ring);
-    let proc_in = Arc::clone(&proc_state);
-    let pending_in = Arc::clone(&pending_proc);
-    let bypass_in = Arc::clone(&bypass);
+    let ring_in = Rc::clone(&ring);
+    let proc_in = Rc::clone(&proc_state);
+    let controls_in = Arc::clone(&controls);
     let _in_listener = in_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
-            if let Ok(mut guard) = pending_in.try_lock() {
-                if let Some(new_proc) = guard.take() {
-                    *proc_in.borrow_mut() = new_proc;
-                }
-            }
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
@@ -246,23 +319,47 @@ fn run_pipewire_sink_inner(
             if datas.is_empty() {
                 return;
             }
-            let chunk_size = datas[0].chunk().size() as usize;
+            let chunk = datas[0].chunk();
+            let offset = chunk.offset() as usize;
+            let size = chunk.size() as usize;
             let Some(slice) = datas[0].data() else {
                 return;
             };
-            let n_floats = (chunk_size / std::mem::size_of::<f32>()).min(slice.len() / 4);
-            let samples: &mut [f32] = unsafe {
-                std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, n_floats)
-            };
-            if !bypass_in.load(Ordering::Relaxed) {
-                proc_in.borrow_mut().process_interleaved(samples);
+            if offset >= slice.len() || size == 0 {
+                return;
             }
-            ring_in.borrow_mut().push_slice(samples);
+            let valid_bytes = size.min(slice.len() - offset);
+            let frame_bytes = 2 * std::mem::size_of::<f32>();
+            let n_frames = valid_bytes / frame_bytes;
+            if n_frames == 0 {
+                return;
+            }
+            let n_floats = n_frames * 2;
+            let byte_slice = &mut slice[offset..offset + n_frames * frame_bytes];
+            let live_controls = controls_in.snapshot();
+
+            let mut proc = proc_in.borrow_mut();
+            proc.set_controls(live_controls);
+
+            if (byte_slice.as_ptr() as usize) % std::mem::align_of::<f32>() == 0 {
+                let samples: &mut [f32] = unsafe {
+                    std::slice::from_raw_parts_mut(byte_slice.as_mut_ptr() as *mut f32, n_floats)
+                };
+                proc.process_interleaved(samples);
+                ring_in.borrow_mut().push_slice(samples);
+            } else {
+                let mut scratch = vec![0.0_f32; n_floats];
+                for (dst, src) in scratch.iter_mut().zip(byte_slice.chunks_exact(4)) {
+                    *dst = f32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+                }
+                proc.process_interleaved(&mut scratch);
+                ring_in.borrow_mut().push_slice(&scratch);
+            }
         })
         .register()
         .context("Failed to register input stream listener")?;
 
-    let ring_out = Arc::clone(&ring);
+    let ring_out = Rc::clone(&ring);
     let _out_listener = out_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
@@ -276,19 +373,37 @@ fn run_pipewire_sink_inner(
             let Some(slice) = datas[0].data() else {
                 return;
             };
-            let n_frames = (slice.len() / (2 * std::mem::size_of::<f32>())).min(1024);
+            let frame_bytes = 2 * std::mem::size_of::<f32>();
+            let n_frames = slice.len() / frame_bytes;
+            if n_frames == 0 {
+                return;
+            }
             let n_floats = n_frames * 2;
-            let out: &mut [f32] = unsafe {
-                std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, n_floats)
-            };
-            let read = ring_out.borrow_mut().pop_slice(out);
-            if read < out.len() {
-                out[read..].fill(0.0);
+            if (slice.as_ptr() as usize) % std::mem::align_of::<f32>() == 0 {
+                let out: &mut [f32] = unsafe {
+                    std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, n_floats)
+                };
+                let read = ring_out.borrow_mut().pop_slice(out);
+                if read < out.len() {
+                    out[read..].fill(0.0);
+                }
+            } else {
+                let mut scratch = vec![0.0_f32; n_floats];
+                let read = ring_out.borrow_mut().pop_slice(&mut scratch);
+                if read < scratch.len() {
+                    scratch[read..].fill(0.0);
+                }
+                for (dst, src) in slice[..n_frames * frame_bytes]
+                    .chunks_exact_mut(4)
+                    .zip(scratch.iter())
+                {
+                    dst.copy_from_slice(&src.to_le_bytes());
+                }
             }
             let chunk = datas[0].chunk_mut();
             *chunk.offset_mut() = 0;
-            *chunk.stride_mut() = (2 * std::mem::size_of::<f32>()) as i32;
-            *chunk.size_mut() = (n_floats * std::mem::size_of::<f32>()) as u32;
+            *chunk.stride_mut() = frame_bytes as i32;
+            *chunk.size_mut() = (n_frames * frame_bytes) as u32;
         })
         .register()
         .context("Failed to register output stream listener")?;
@@ -316,9 +431,7 @@ fn run_pipewire_sink_inner(
         .connect(
             spa::utils::Direction::Input,
             None,
-            pw::stream::StreamFlags::AUTOCONNECT
-                | pw::stream::StreamFlags::MAP_BUFFERS
-                | pw::stream::StreamFlags::RT_PROCESS,
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .context("Failed to connect virtual sink stream")?;
@@ -327,22 +440,26 @@ fn run_pipewire_sink_inner(
         .connect(
             spa::utils::Direction::Output,
             None,
-            pw::stream::StreamFlags::AUTOCONNECT
-                | pw::stream::StreamFlags::MAP_BUFFERS
-                | pw::stream::StreamFlags::RT_PROCESS,
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .context("Failed to connect output stream")?;
 
     let mainloop_weak = mainloop.downgrade();
-    let _quit_timer = mainloop.loop_().add_timer(move |_| {
+    let proc_timer = Rc::clone(&proc_state);
+    let _control_timer = mainloop.loop_().add_timer(move |_| {
+        if let Ok(mut guard) = pending_proc.try_lock() {
+            if let Some(new_proc) = guard.take() {
+                *proc_timer.borrow_mut() = new_proc;
+            }
+        }
         if quit.load(Ordering::Relaxed) {
             if let Some(ml) = mainloop_weak.upgrade() {
                 ml.quit();
             }
         }
     });
-    _quit_timer.update_timer(
+    _control_timer.update_timer(
         Some(Duration::from_millis(50)),
         Some(Duration::from_millis(50)),
     );
@@ -358,4 +475,60 @@ fn run_pipewire_sink_inner(
 
     mainloop.run();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ring_buf_push_pop_and_wrap() {
+        let mut ring = RingBuf::new(8); // max 7 floats usable
+        ring.push_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let mut out = [0.0; 2];
+        assert_eq!(ring.pop_slice(&mut out), 2);
+        assert_eq!(out, [1.0, 2.0]);
+
+        // Wrap around
+        ring.push_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
+        let mut out2 = [0.0; 8];
+        let n = ring.pop_slice(&mut out2);
+        assert_eq!(n, 7);
+        assert_eq!(&out2[..n], &[3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn control_atomics_defaults_and_updates() {
+        let ctrl = ControlAtomics::new();
+        let snap = ctrl.snapshot();
+        assert!(!snap.bypass);
+        assert!(snap.level_match);
+        assert!((snap.surround_amount - 1.0).abs() < 1e-6);
+        assert!((snap.dialog_amount - 1.0).abs() < 1e-6);
+
+        ctrl.bypass.store(true, Ordering::Relaxed);
+        ctrl.level_match.store(false, Ordering::Relaxed);
+        ctrl.surround_amount
+            .store(0.42_f32.to_bits(), Ordering::Relaxed);
+        ctrl.dialog_amount
+            .store(1.35_f32.to_bits(), Ordering::Relaxed);
+
+        let updated = ctrl.snapshot();
+        assert!(updated.bypass);
+        assert!(!updated.level_match);
+        assert!((updated.surround_amount - 0.42).abs() < 1e-6);
+        assert!((updated.dialog_amount - 1.35).abs() < 1e-6);
+    }
+
+    #[test]
+    fn validate_target_sink_fails_closed() {
+        assert!(validate_target_sink(None).is_err());
+        assert!(validate_target_sink(Some(VIRTUAL_SINK_NAME.to_string())).is_err());
+        assert!(validate_target_sink(Some(VIRTUAL_OUT_NAME.to_string())).is_err());
+        assert_eq!(
+            validate_target_sink(Some("alsa_output.pci-0000_00_1f.3.Speaker__sink".to_string()))
+                .unwrap(),
+            "alsa_output.pci-0000_00_1f.3.Speaker__sink"
+        );
+    }
 }
