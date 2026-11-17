@@ -16,7 +16,7 @@ const VIRTUAL_SINK_NAME: &str = "dolby_atmos_rust";
 const VIRTUAL_OUT_NAME: &str = "dolby_atmos_rust_out";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Lock-free SPSC ring buffer for interleaved stereo f32 frames.
+/// Bounded ring buffer for interleaved stereo f32 frames (serialized via Rc<RefCell> on the PipeWire mainloop).
 struct RingBuf {
     buf: Vec<f32>,
     cap: usize,
@@ -38,7 +38,7 @@ impl RingBuf {
         let mut h = self.head.load(Ordering::Relaxed);
         let t = self.tail.load(Ordering::Acquire);
         let avail = self.cap - 1 - ((h + self.cap - t) % self.cap);
-        let n = data.len().min(avail);
+        let n = (data.len().min(avail) / 2) * 2;
         for &s in &data[..n] {
             self.buf[h] = s;
             h = (h + 1) % self.cap;
@@ -50,7 +50,7 @@ impl RingBuf {
         let h = self.head.load(Ordering::Acquire);
         let mut t = self.tail.load(Ordering::Relaxed);
         let avail = (h + self.cap - t) % self.cap;
-        let n = out.len().min(avail);
+        let n = (out.len().min(avail) / 2) * 2;
         for slot in &mut out[..n] {
             *slot = self.buf[t];
             t = (t + 1) % self.cap;
@@ -169,6 +169,14 @@ pub fn detect_hardware_speaker_sink() -> Option<String> {
     None
 }
 
+fn select_output_frames(requested: u64, max_frames: usize) -> usize {
+    if requested > 0 {
+        (requested as usize).min(max_frames)
+    } else {
+        max_frames
+    }
+}
+
 fn validate_target_sink(target: Option<String>) -> Result<String> {
     let target = target.ok_or_else(|| {
         anyhow!("Failed to resolve hardware speaker sink target; refusing to start without a valid target")
@@ -261,6 +269,12 @@ fn run_pipewire_sink_inner(
     quit: Arc<AtomicBool>,
     ready_tx: Option<std::sync::mpsc::Sender<Result<()>>>,
 ) -> Result<()> {
+    if sample_rate != 44100 && sample_rate != 48000 {
+        return Err(anyhow!(
+            "Unsupported sample rate {} Hz (supported: 44100, 48000)",
+            sample_rate
+        ));
+    }
     let resolved_target = validate_target_sink(target_sink.or_else(detect_hardware_speaker_sink))?;
 
     pw::init();
@@ -366,6 +380,7 @@ fn run_pipewire_sink_inner(
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
+            let req_frames = buffer.requested();
             let datas = buffer.datas_mut();
             if datas.is_empty() {
                 return;
@@ -374,7 +389,8 @@ fn run_pipewire_sink_inner(
                 return;
             };
             let frame_bytes = 2 * std::mem::size_of::<f32>();
-            let n_frames = slice.len() / frame_bytes;
+            let max_frames = slice.len() / frame_bytes;
+            let n_frames = select_output_frames(req_frames, max_frames);
             if n_frames == 0 {
                 return;
             }
@@ -483,18 +499,26 @@ mod tests {
 
     #[test]
     fn ring_buf_push_pop_and_wrap() {
-        let mut ring = RingBuf::new(8); // max 7 floats usable
+        let mut ring = RingBuf::new(8); // max 7 floats -> 3 stereo frames (6 floats)
         ring.push_slice(&[1.0, 2.0, 3.0, 4.0]);
         let mut out = [0.0; 2];
         assert_eq!(ring.pop_slice(&mut out), 2);
         assert_eq!(out, [1.0, 2.0]);
 
-        // Wrap around
+        // Wrap around & overflow preserves whole stereo frames (no split L/R)
         ring.push_slice(&[5.0, 6.0, 7.0, 8.0, 9.0, 10.0]);
         let mut out2 = [0.0; 8];
         let n = ring.pop_slice(&mut out2);
-        assert_eq!(n, 7);
-        assert_eq!(&out2[..n], &[3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        assert_eq!(n, 6);
+        assert_eq!(&out2[..n], &[3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    }
+
+    #[test]
+    fn select_output_frames_respects_requested_and_capacity() {
+        assert_eq!(select_output_frames(0, 2048), 2048);
+        assert_eq!(select_output_frames(1536, 2048), 1536);
+        assert_eq!(select_output_frames(4096, 2048), 2048);
+        assert_eq!(select_output_frames(512, 2048), 512);
     }
 
     #[test]
