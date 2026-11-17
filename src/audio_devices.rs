@@ -162,7 +162,8 @@ pub fn parse_sinks_json(json_str: &str) -> Result<Vec<OutputDevice>> {
 }
 
 fn parse_single_sink(item: &Value) -> Option<OutputDevice> {
-    let id = item.get("index")?.as_u64()? as u32;
+    let raw_id = item.get("index")?.as_u64()?;
+    let id = u32::try_from(raw_id).ok()?;
     let name = item.get("name")?.as_str()?.to_string();
     let description = item
         .get("description")
@@ -172,11 +173,8 @@ fn parse_single_sink(item: &Value) -> Option<OutputDevice> {
         .to_string();
 
     let props = item.get("properties").and_then(|v| v.as_object());
-    let prop_str = |key: &str| -> Option<&str> {
-        props
-            .and_then(|m| m.get(key))
-            .and_then(|v| v.as_str())
-    };
+    let prop_str =
+        |key: &str| -> Option<&str> { props.and_then(|m| m.get(key)).and_then(|v| v.as_str()) };
 
     let active_port_name = item.get("active_port").and_then(|v| v.as_str());
     let ports = item
@@ -193,7 +191,13 @@ fn parse_single_sink(item: &Value) -> Option<OutputDevice> {
 
     let available = compute_availability(active_port_obj, ports);
     let is_virtual = detect_virtual(&name, prop_str);
-    let kind = classify_device_kind(&name, is_virtual, prop_str, active_port_name, active_port_obj);
+    let kind = classify_device_kind(
+        &name,
+        is_virtual,
+        prop_str,
+        active_port_name,
+        active_port_obj,
+    );
     let is_internal_speaker = !is_virtual && kind == DeviceKind::InternalSpeaker;
 
     Some(OutputDevice {
@@ -269,7 +273,8 @@ fn classify_device_kind<'a>(
         return DeviceKind::Usb;
     }
 
-    // 3. Active port takes priority over sink name / port list
+    // 3. Active port takes priority over sink name / port list.
+    // If active_port is present, never fall back to icon_name or sink name.
     if let Some(ap_name) = active_port_name {
         let ap_lower = ap_name.to_ascii_lowercase();
         let ap_type = active_port_obj
@@ -294,19 +299,30 @@ fn classify_device_kind<'a>(
             return DeviceKind::Hdmi;
         }
 
-        if ap_type == "speaker" || ap_lower.contains("speaker") {
+        let is_local_bus = device_bus.eq_ignore_ascii_case("pci")
+            || device_bus.eq_ignore_ascii_case("platform")
+            || name_lower.starts_with("alsa_output.pci-")
+            || name_lower.starts_with("alsa_output.platform-");
+
+        if is_local_bus && (ap_type == "speaker" || ap_lower.contains("speaker")) {
             return DeviceKind::InternalSpeaker;
         }
+
+        return DeviceKind::Unknown;
     }
 
-    // 4. Fallback when active_port is absent
+    // 4. Fallback when active_port is absent (never infer InternalSpeaker from icon_name alone)
     if name_lower.contains("hdmi") || icon_name.eq_ignore_ascii_case("video-display") {
         return DeviceKind::Hdmi;
     }
     if name_lower.contains("headphone") || name_lower.contains("headset") {
         return DeviceKind::Headphones;
     }
-    if name_lower.contains("speaker__sink") || icon_name.eq_ignore_ascii_case("audio-speakers") {
+    let is_local_bus = device_bus.eq_ignore_ascii_case("pci")
+        || device_bus.eq_ignore_ascii_case("platform")
+        || name_lower.starts_with("alsa_output.pci-")
+        || name_lower.starts_with("alsa_output.platform-");
+    if is_local_bus && name_lower.contains("speaker__sink") {
         return DeviceKind::InternalSpeaker;
     }
 
@@ -460,5 +476,43 @@ mod tests {
         assert!(validate_sink_name("--help").is_err());
         assert!(validate_sink_name("sink\0name").is_err());
         assert!(validate_sink_name("alsa_output.pci-0000_00_1f.3.analog-stereo").is_ok());
+    }
+
+    #[test]
+    fn lineout_with_speaker_icon_and_network_bus_are_not_internal_speaker() {
+        let json = r#"[
+            {
+                "index": 20,
+                "name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+                "description": "Line Out",
+                "properties": { "device.bus": "pci", "device.icon_name": "audio-speakers" },
+                "ports": [{ "name": "analog-output-lineout", "type": "Line", "availability": "available" }],
+                "active_port": "analog-output-lineout"
+            },
+            {
+                "index": 21,
+                "name": "raop_sink.AirPlay.local",
+                "description": "Living Room Speaker",
+                "properties": { "device.bus": "network", "device.icon_name": "audio-speakers" },
+                "ports": [{ "name": "speaker", "type": "Speaker", "availability": "available" }],
+                "active_port": "speaker"
+            }
+        ]"#;
+
+        let devices = parse_sinks_json(json).unwrap();
+        assert_eq!(devices[0].kind, DeviceKind::Unknown);
+        assert!(!devices[0].is_internal_speaker);
+        assert_eq!(devices[1].kind, DeviceKind::Unknown);
+        assert!(!devices[1].is_internal_speaker);
+        assert!(choose_internal_speaker(&devices, None).is_none());
+    }
+
+    #[test]
+    fn handles_malformed_json_and_index_overflow() {
+        assert!(parse_sinks_json("not json").is_err());
+        assert!(parse_sinks_json("{}").is_err());
+        let overflow = r#"[{"index": 99999999999999, "name": "bad_sink"}]"#;
+        let devices = parse_sinks_json(overflow).unwrap();
+        assert!(devices.is_empty());
     }
 }
