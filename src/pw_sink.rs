@@ -219,7 +219,6 @@ fn run_pipewire_sink_inner(
         *pw::keys::AUDIO_CHANNELS => "2",
         "audio.position" => "FL,FR",
         "node.dont-reconnect" => "true",
-        "node.passive" => "true",
     };
     if let Some(ref target) = resolved_target {
         out_props.insert("target.object", target.as_str());
