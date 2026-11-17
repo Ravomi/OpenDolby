@@ -1,5 +1,7 @@
 #[path = "dolby_gui/assets.rs"]
 mod assets;
+#[path = "dolby_gui/instance.rs"]
+mod instance;
 #[path = "dolby_gui/view.rs"]
 mod view;
 
@@ -24,6 +26,18 @@ struct GuiArgs {
     /// Local OEM tuning XML. Defaults to OPENDOLBY_XML or the user config directory.
     #[arg(long)]
     xml: Option<PathBuf>,
+    /// Start the Dolby audio engine via the running instance (or start GUI + engine).
+    #[arg(long)]
+    start: bool,
+    /// Stop the Dolby audio engine and restore the speaker output via the running instance.
+    #[arg(long)]
+    stop: bool,
+    /// Print JSON status of the running instance and exit.
+    #[arg(long)]
+    status: bool,
+    /// Stop the Dolby audio engine, restore the speaker output, and quit the background instance.
+    #[arg(long)]
+    quit: bool,
 }
 
 const OUR_SINK_PATTERN: &str = "Dolby Atmos Rust";
@@ -107,6 +121,20 @@ impl DolbyGui {
             we_changed_default: false,
             status,
         }
+    }
+
+    fn is_engine_running(&self) -> bool {
+        self.engine.is_some()
+    }
+
+    fn status_json(&self, window_open: bool) -> String {
+        format!(
+            r#"{{"pid":{},"running":{},"profile":"{}","window_open":{}}}"#,
+            std::process::id(),
+            self.engine.is_some(),
+            self.active_profile,
+            window_open
+        )
     }
 
     fn apply_live_controls(&self, handle: &EngineHandle) {
@@ -306,8 +334,149 @@ impl Render for DolbyGui {
     }
 }
 
+struct AppState {
+    gui: Entity<DolbyGui>,
+    _socket_guard: Option<instance::SocketGuard>,
+}
+
+impl gpui_kit::Global for AppState {}
+
+fn open_or_activate_window(cx: &mut gpui_kit::App) {
+    if let Some(window) = cx.windows().into_iter().next() {
+        let _ = window.update(cx, |_, window, _| {
+            window.activate_window();
+        });
+        return;
+    }
+
+    let bounds = Bounds::centered(None, size(px(1040.0), px(760.0)), cx);
+    gpui_kit::open_window(
+        WindowOptions {
+            window_min_size: Some(size(px(780.0), px(600.0))),
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            ..Default::default()
+        },
+        cx,
+        |window, cx| {
+            window.set_window_title("OpenDolby");
+            window.set_app_id("dolby-gui");
+            let view = cx.global::<AppState>().gui.clone();
+            cx.new(|cx| Root::new(view, window, cx))
+        },
+    )
+    .expect("failed to open OpenDolby window");
+}
+
+fn handle_ipc_request(req: instance::IpcRequest, cx: &mut gpui_kit::App) {
+    let gui = cx.global::<AppState>().gui.clone();
+    let response = match req.command {
+        instance::IpcCommand::Activate => {
+            open_or_activate_window(cx);
+            let window_open = !cx.windows().is_empty();
+            gui.read(cx).status_json(window_open)
+        }
+        instance::IpcCommand::Start => {
+            gui.update(cx, |this, cx| {
+                this.toggle_engine(true);
+                cx.notify();
+            });
+            let window_open = !cx.windows().is_empty();
+            gui.read(cx).status_json(window_open)
+        }
+        instance::IpcCommand::Stop => {
+            gui.update(cx, |this, cx| {
+                this.toggle_engine(false);
+                cx.notify();
+            });
+            let window_open = !cx.windows().is_empty();
+            gui.read(cx).status_json(window_open)
+        }
+        instance::IpcCommand::Status => {
+            let window_open = !cx.windows().is_empty();
+            gui.read(cx).status_json(window_open)
+        }
+        instance::IpcCommand::Quit => {
+            gui.update(cx, |this, cx| {
+                this.toggle_engine(false);
+                cx.notify();
+            });
+            let resp = format!(
+                r#"{{"ok":true,"pid":{},"running":false,"quit":true}}"#,
+                std::process::id()
+            );
+            let _ = req.reply.send(resp);
+            cx.quit();
+            return;
+        }
+    };
+    let _ = req.reply.send(response);
+}
+
 fn main() {
-    let xml = GuiArgs::parse().xml.unwrap_or_else(default_xml_path);
+    let args = GuiArgs::parse();
+    let sock_path = instance::default_socket_path();
+
+    if args.status {
+        match instance::send_command(&sock_path, instance::IpcCommand::Status) {
+            Ok(resp) => println!("{resp}"),
+            Err(_) => println!(r#"{{"pid":null,"running":false,"profile":null,"window_open":false}}"#),
+        }
+        return;
+    }
+
+    if args.stop {
+        match instance::send_command(&sock_path, instance::IpcCommand::Stop) {
+            Ok(resp) => println!("{resp}"),
+            Err(_) => println!(r#"{{"ok":true,"running":false}}"#),
+        }
+        return;
+    }
+
+    if args.quit {
+        match instance::send_command(&sock_path, instance::IpcCommand::Quit) {
+            Ok(resp) => println!("{resp}"),
+            Err(_) => println!(r#"{{"ok":true,"running":false,"quit":true}}"#),
+        }
+        return;
+    }
+
+    let xml_explicit = args.xml.is_some();
+    let xml = args.xml.unwrap_or_else(default_xml_path);
+
+    let (ipc_rx, socket_guard) = match instance::bind_or_connect(&sock_path) {
+        Ok(instance::BindOutcome::Bound(listener)) => instance::spawn_listener(listener, sock_path),
+        Ok(instance::BindOutcome::AlreadyRunning) => {
+            if xml_explicit {
+                eprintln!(
+                    "dolby-gui is already running; ignoring --xml {}",
+                    xml.display()
+                );
+            }
+            let cmd = if args.start {
+                instance::IpcCommand::Start
+            } else {
+                instance::IpcCommand::Activate
+            };
+            match instance::send_command(&sock_path, cmd) {
+                Ok(resp) => {
+                    if args.start {
+                        println!("{resp}");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("Failed to communicate with running dolby-gui instance: {err}");
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Err(err) => {
+            eprintln!("Failed to initialize dolby-gui IPC socket: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let auto_start = args.start;
     gpui_kit::application()
         .with_assets(assets::application_assets())
         .run(move |cx| {
@@ -323,28 +492,36 @@ fn main() {
             theme.colors.primary_active = rgb(0x45bfd8).into();
             theme.colors.border = rgb(0x25303f).into();
             theme.colors.secondary = rgb(0x161f2b).into();
+
+            let gui = cx.new(|cx| DolbyGui::new(&xml, cx));
+            if auto_start {
+                gui.update(cx, |this, cx| {
+                    this.toggle_engine(true);
+                    cx.notify();
+                });
+            }
+            cx.set_global(AppState {
+                gui,
+                _socket_guard: Some(socket_guard),
+            });
+
             cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
+                if cx.windows().is_empty()
+                    && !cx.global::<AppState>().gui.read(cx).is_engine_running()
+                {
                     cx.quit();
                 }
             })
             .detach();
-            let bounds = Bounds::centered(None, size(px(1040.0), px(760.0)), cx);
-            gpui_kit::open_window(
-                WindowOptions {
-                    window_min_size: Some(size(px(780.0), px(600.0))),
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    window.set_window_title("OpenDolby");
-                    window.set_app_id("dolby-gui");
-                    let view = cx.new(|cx| DolbyGui::new(&xml, cx));
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .expect("failed to open OpenDolby window");
+
+            cx.spawn(async move |cx| {
+                while let Ok(req) = ipc_rx.recv().await {
+                    cx.update(|cx| handle_ipc_request(req, cx));
+                }
+            })
+            .detach();
+
+            open_or_activate_window(cx);
         });
 }
 
