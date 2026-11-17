@@ -1,13 +1,38 @@
 pub mod biquad;
 pub mod dynamics;
+pub mod eq;
+pub mod level_match;
 pub mod spatial;
 
 use crate::dsp::biquad::Biquad;
 use crate::dsp::dynamics::{db_to_lin, MultibandCompressor, SafetyLimiter, VolumeLeveler};
 use crate::dsp::spatial::{DialogEnhancer, SurroundVirtualizer};
 use crate::tuning::{DeviceTuning, ProfileTuning};
+use eq::fitted_graphic_eq;
+use level_match::LevelMatch;
 
-/// Complete real-time safe stereo Dolby DAX3 DSP processor for a selected profile.
+/// Live controls. Multipliers scale only effects enabled by the selected profile.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeControls {
+    pub bypass: bool,
+    pub level_match: bool,
+    pub surround_amount: f32,
+    pub dialog_amount: f32,
+}
+
+impl Default for RuntimeControls {
+    fn default() -> Self {
+        Self {
+            bypass: false,
+            level_match: true,
+            surround_amount: 1.0,
+            dialog_amount: 1.0,
+        }
+    }
+}
+
+/// Experimental stereo OEM tuning approximation, not a Dolby Atmos renderer.
+/// Processing allocates no memory. Construction/fitting stays off the audio path.
 #[derive(Debug, Clone)]
 pub struct DolbyProcessor {
     pub profile_name: String,
@@ -27,10 +52,18 @@ pub struct DolbyProcessor {
     speaker_peq_r: Vec<Biquad>,
     mb_compressor: MultibandCompressor,
     limiter: SafetyLimiter,
+    controls: RuntimeControls,
+    level_match: LevelMatch,
+    wet_mix: f32,
+    mix_step: f32,
 }
 
 impl DolbyProcessor {
-    pub fn from_tuning(tuning: &DeviceTuning, profile_name: &str, sample_rate: u32) -> Option<Self> {
+    pub fn from_tuning(
+        tuning: &DeviceTuning,
+        profile_name: &str,
+        sample_rate: u32,
+    ) -> Option<Self> {
         let profile = tuning.profiles.get(profile_name)?;
         let freqs = tuning.band_freqs(sample_rate);
         Some(Self::new(profile, freqs, sample_rate as f32))
@@ -41,44 +74,33 @@ impl DolbyProcessor {
         let cp = &profile.cp;
         let vlldp = &profile.vlldp;
 
-        // 1. Intelligent EQ / Graphic EQ (20-band Peaking cascade, Q ~ 2.2)
-        let mut ieq_l = Vec::new();
-        let mut ieq_r = Vec::new();
+        // 1. Fit combined EQ response at band centers. The XML frequencies are
+        // nonuniform, so assigning every filter its target dB overcounts neighbors.
+        let mut cp_target = vec![0.0; band_freqs.len()];
         if cp.ieq_enable && cp.ieq_amount > 0.0 {
+            // Static approximation of the proprietary content-adaptive IEQ.
             let scale = (cp.ieq_amount / 10.0).clamp(0.0, 1.0) * 0.35;
-            for (i, &f0) in band_freqs.iter().enumerate() {
-                let db = cp.ieq_target_db.get(i).copied().unwrap_or(0.0) * scale;
-                if db.abs() >= 0.1 {
-                    ieq_l.push(Biquad::peaking(fs, f0, 2.2, db));
-                    ieq_r.push(Biquad::peaking(fs, f0, 2.2, db));
-                }
+            for (i, db) in cp_target.iter_mut().enumerate() {
+                *db += cp.ieq_target_db.get(i).copied().unwrap_or(0.0) * scale;
             }
         }
         if cp.geq_enable {
-            for (i, &f0) in band_freqs.iter().enumerate() {
-                let db = cp.geq_db.get(i).copied().unwrap_or(0.0);
-                if db.abs() >= 0.1 {
-                    ieq_l.push(Biquad::peaking(fs, f0, 2.2, db));
-                    ieq_r.push(Biquad::peaking(fs, f0, 2.2, db));
-                }
+            for (i, db) in cp_target.iter_mut().enumerate() {
+                *db += cp.geq_db.get(i).copied().unwrap_or(0.0);
             }
         }
+        let ieq_l = fitted_graphic_eq(fs, band_freqs, &cp_target);
+        let ieq_r = ieq_l.clone();
 
         // 2. VLLDP Audio Optimizer (20-band speaker calibration per channel)
-        let mut optimizer_l = Vec::new();
-        let mut optimizer_r = Vec::new();
-        if vlldp.audio_optimizer_enable {
-            for (i, &f0) in band_freqs.iter().enumerate() {
-                let db_l = vlldp.audio_optimizer_ch0_db.get(i).copied().unwrap_or(0.0);
-                let db_r = vlldp.audio_optimizer_ch1_db.get(i).copied().unwrap_or(0.0);
-                if db_l.abs() >= 0.1 {
-                    optimizer_l.push(Biquad::peaking(fs, f0, 2.2, db_l));
-                }
-                if db_r.abs() >= 0.1 {
-                    optimizer_r.push(Biquad::peaking(fs, f0, 2.2, db_r));
-                }
-            }
-        }
+        let (optimizer_l, optimizer_r) = if vlldp.audio_optimizer_enable {
+            (
+                fitted_graphic_eq(fs, band_freqs, &vlldp.audio_optimizer_ch0_db),
+                fitted_graphic_eq(fs, band_freqs, &vlldp.audio_optimizer_ch1_db),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // 3. VLLDP Speaker PEQ (e.g., 130Hz 8th-order HPF + 4 hardware PEQ notches)
         let mut speaker_peq_l = Vec::new();
@@ -95,9 +117,7 @@ impl DolbyProcessor {
                 };
                 match spec.filter_type {
                     9 => target.extend(Biquad::butterworth_highpass_cascade(
-                        fs,
-                        spec.f0,
-                        spec.order,
+                        fs, spec.f0, spec.order,
                     )),
                     _ => target.push(Biquad::peaking(fs, spec.f0, spec.q, spec.gain_db)),
                 }
@@ -141,19 +161,44 @@ impl DolbyProcessor {
                 band_freqs,
             ),
             limiter: SafetyLimiter::new(fs, -0.5),
+            controls: RuntimeControls::default(),
+            level_match: LevelMatch::new(fs),
+            wet_mix: if bypass { 0.0 } else { 1.0 },
+            mix_step: 1.0 / (fs * 0.02),
         }
+    }
+
+    /// Atomic snapshots from the streaming layer arrive once per audio block.
+    pub fn set_controls(&mut self, controls: RuntimeControls) {
+        self.controls = controls;
+        self.dialog_enhancer.set_amount(controls.dialog_amount);
+        self.surround_virtualizer
+            .set_amount(controls.surround_amount);
     }
 
     /// Process stereo interleaved f32 buffer in-place (zero heap allocations).
     #[inline]
     pub fn process_interleaved(&mut self, samples: &mut [f32]) {
         if self.bypass {
+            // Profile "off" is genuinely flat (no hidden dynamics or width).
             return;
         }
 
         for frame in samples.chunks_exact_mut(2) {
-            let mut l = frame[0] * self.pregain_lin;
-            let mut r = frame[1] * self.pregain_lin;
+            let dry = (
+                if frame[0].is_finite() {
+                    frame[0].clamp(-16.0, 16.0)
+                } else {
+                    0.0
+                },
+                if frame[1].is_finite() {
+                    frame[1].clamp(-16.0, 16.0)
+                } else {
+                    0.0
+                },
+            );
+            let mut l = dry.0 * self.pregain_lin;
+            let mut r = dry.1 * self.pregain_lin;
 
             // CP stage
             (l, r) = self.volume_leveler.process_stereo(l, r);
@@ -184,6 +229,15 @@ impl DolbyProcessor {
             l *= self.postgain_lin;
             r *= self.postgain_lin;
 
+            // Keep the processed path/envelopes warm while auditioning dry.
+            // Compare at the quieter RMS and never increase either path's gain.
+            let (dry, wet) = self
+                .level_match
+                .process(dry, (l, r), self.controls.level_match);
+            let target_mix = if self.controls.bypass { 0.0 } else { 1.0 };
+            self.wet_mix += (target_mix - self.wet_mix).clamp(-self.mix_step, self.mix_step);
+            l = dry.0 + self.wet_mix * (wet.0 - dry.0);
+            r = dry.1 + self.wet_mix * (wet.1 - dry.1);
             (l, r) = self.limiter.process_stereo(l, r);
             frame[0] = l;
             frame[1] = r;
@@ -227,8 +281,7 @@ mod tests {
         // 130 Hz 8th-order HPF + optimizer (-14 dB at 47 Hz) must strongly attenuate 50 Hz
         assert!(rms(&low_out[2400..]) < rms(&low[2400..]) * 0.2);
 
-        let mut proc_off =
-            DolbyProcessor::from_tuning(&tuning, "off", 48000).expect("off profile");
+        let mut proc_off = DolbyProcessor::from_tuning(&tuning, "off", 48000).expect("off profile");
         let mut off_out = low.clone();
         proc_off.process_interleaved(&mut off_out);
         assert_eq!(off_out, low);

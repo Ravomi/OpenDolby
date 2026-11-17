@@ -36,6 +36,20 @@ impl Biquad {
         self.z2 = 0.0;
     }
 
+    /// Analytic magnitude of the quantized coefficients used by the real processor.
+    pub fn response_db(&self, fs: f32, frequency: f32) -> f32 {
+        let w = 2.0 * std::f64::consts::PI * frequency as f64 / fs as f64;
+        let power = |c0: f32, c1: f32, c2: f32| {
+            let re = c0 as f64 + c1 as f64 * w.cos() + c2 as f64 * (2.0 * w).cos();
+            let im = -c1 as f64 * w.sin() - c2 as f64 * (2.0 * w).sin();
+            re * re + im * im
+        };
+        (10.0
+            * (power(self.b0, self.b1, self.b2).max(1e-30)
+                / power(1.0, self.a1, self.a2).max(1e-30))
+            .log10()) as f32
+    }
+
     #[inline(always)]
     pub fn process(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.z1;

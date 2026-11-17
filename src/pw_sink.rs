@@ -283,7 +283,9 @@ fn run_pipewire_sink_inner(
         pw::main_loop::MainLoopRc::new(None).context("Failed to create PipeWire MainLoop")?;
     let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .context("Failed to create PipeWire Context")?;
-    let core = context.connect(None).context("Failed to connect to PipeWire daemon")?;
+    let core = context
+        .connect(None)
+        .context("Failed to connect to PipeWire daemon")?;
 
     // Non-hard-RT: stream callbacks are serialized on the PipeWire mainloop thread
     // (RT_PROCESS is intentionally omitted), so Rc<RefCell<...>> is sound.
@@ -550,8 +552,10 @@ mod tests {
         assert!(validate_target_sink(Some(VIRTUAL_SINK_NAME.to_string())).is_err());
         assert!(validate_target_sink(Some(VIRTUAL_OUT_NAME.to_string())).is_err());
         assert_eq!(
-            validate_target_sink(Some("alsa_output.pci-0000_00_1f.3.Speaker__sink".to_string()))
-                .unwrap(),
+            validate_target_sink(Some(
+                "alsa_output.pci-0000_00_1f.3.Speaker__sink".to_string()
+            ))
+            .unwrap(),
             "alsa_output.pci-0000_00_1f.3.Speaker__sink"
         );
     }

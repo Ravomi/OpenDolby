@@ -1,12 +1,15 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use dolby_rs::dsp::DolbyProcessor;
+use dolby_rs::dsp::{DolbyProcessor, RuntimeControls};
 use dolby_rs::tuning::DeviceTuning;
 use dolby_rs::{pw_sink, DEFAULT_XML};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "dolby-rs", about = "Rust Dolby DAX3 DSP engine for Linux PipeWire")]
+#[command(
+    name = "dolby-rs",
+    about = "Rust Dolby DAX3 DSP engine for Linux PipeWire"
+)]
 struct Cli {
     #[arg(long, default_value = DEFAULT_XML)]
     xml: PathBuf,
@@ -28,6 +31,18 @@ enum Commands {
         output: PathBuf,
         #[arg(long, default_value = "dynamic")]
         profile: String,
+        /// Audition the dry path, with RMS matching if enabled
+        #[arg(long)]
+        bypass: bool,
+        /// Disable approximate RMS A/B alignment (may make processing much louder)
+        #[arg(long)]
+        no_level_match: bool,
+        /// Scale profile-enabled surround contribution (0..2)
+        #[arg(long, default_value_t = 1.0)]
+        surround: f32,
+        /// Scale profile-enabled dialog contribution (0..2)
+        #[arg(long, default_value_t = 1.0)]
+        dialog: f32,
     },
     /// Run live PipeWire virtual sink ("Dolby Atmos Rust (ALC294)")
     Run {
@@ -46,7 +61,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Inspect { profile } => {
-            println!("XML version: {} ({})", tuning.xml_version, tuning.tuning_date);
+            println!(
+                "XML version: {} ({})",
+                tuning.xml_version, tuning.tuning_date
+            );
             let mut names: Vec<&String> = tuning.profiles.keys().collect();
             names.sort();
             println!("Available profiles: {:?}", names);
@@ -57,7 +75,10 @@ fn main() -> Result<()> {
                 .ok_or_else(|| anyhow!("Profile '{}' not found", profile))?;
             println!("\n[Profile: {}]", p.name);
             println!("  CP:");
-            println!("    ieq_enable={} amount={}", p.cp.ieq_enable, p.cp.ieq_amount);
+            println!(
+                "    ieq_enable={} amount={}",
+                p.cp.ieq_enable, p.cp.ieq_amount
+            );
             println!(
                 "    volume_leveler_enable={} amount={} target={} dB",
                 p.cp.volume_leveler_enable,
@@ -94,6 +115,10 @@ fn main() -> Result<()> {
             input,
             output,
             profile,
+            bypass,
+            no_level_match,
+            surround,
+            dialog,
         } => {
             let mut reader = hound::WavReader::open(&input)
                 .with_context(|| format!("Failed to open {}", input.display()))?;
@@ -103,9 +128,9 @@ fn main() -> Result<()> {
             }
 
             let mut samples: Vec<f32> = match spec.sample_format {
-                hound::SampleFormat::Float => {
-                    reader.samples::<f32>().collect::<std::result::Result<_, _>>()?
-                }
+                hound::SampleFormat::Float => reader
+                    .samples::<f32>()
+                    .collect::<std::result::Result<_, _>>()?,
                 hound::SampleFormat::Int => {
                     let scale = (1_i64 << (spec.bits_per_sample - 1)) as f32;
                     reader
@@ -117,6 +142,12 @@ fn main() -> Result<()> {
 
             let mut proc = DolbyProcessor::from_tuning(&tuning, &profile, spec.sample_rate)
                 .ok_or_else(|| anyhow!("Profile '{}' not found", profile))?;
+            proc.set_controls(RuntimeControls {
+                bypass,
+                level_match: !no_level_match,
+                surround_amount: surround,
+                dialog_amount: dialog,
+            });
             proc.process_interleaved(&mut samples);
 
             let out_spec = hound::WavSpec {
@@ -130,7 +161,12 @@ fn main() -> Result<()> {
                 writer.write_sample(s)?;
             }
             writer.finalize()?;
-            println!("Processed {} -> {} (profile={})", input.display(), output.display(), profile);
+            println!(
+                "Processed {} -> {} (profile={})",
+                input.display(),
+                output.display(),
+                profile
+            );
         }
         Commands::Run {
             profile,

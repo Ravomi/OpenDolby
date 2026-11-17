@@ -118,9 +118,7 @@ impl DeviceTuning {
 
         let endpoint = root
             .children()
-            .find(|n| {
-                n.has_tag_name("endpoint") && n.attribute("type") == Some("internal_speaker")
-            })
+            .find(|n| n.has_tag_name("endpoint") && n.attribute("type") == Some("internal_speaker"))
             .or_else(|| root.children().find(|n| n.has_tag_name("endpoint")))
             .ok_or_else(|| anyhow!("Missing <endpoint> section"))?;
 
@@ -210,7 +208,10 @@ fn parse_cp(prof_node: Node, presets: &HashMap<String, Vec<i32>>) -> Result<CpTu
 }
 
 fn parse_vlldp(prof_node: Node, presets: &HashMap<String, Vec<i32>>) -> Result<VlldpTuning> {
-    let Some(vlldp) = prof_node.children().find(|n| n.has_tag_name("tuning-vlldp")) else {
+    let Some(vlldp) = prof_node
+        .children()
+        .find(|n| n.has_tag_name("tuning-vlldp"))
+    else {
         return Ok(VlldpTuning {
             audio_optimizer_enable: false,
             audio_optimizer_ch0_db: vec![0.0; 20],
@@ -304,7 +305,9 @@ fn parse_vlldp(prof_node: Node, presets: &HashMap<String, Vec<i32>>) -> Result<V
         }
     }
 
-    let reg_node = vlldp.children().find(|n| n.has_tag_name("regulator-tuning"));
+    let reg_node = vlldp
+        .children()
+        .find(|n| n.has_tag_name("regulator-tuning"));
     let regulator_threshold_high_db = reg_node
         .map(|n| resolve_band_db(n, "threshold_high", presets, 20))
         .transpose()?
@@ -379,7 +382,11 @@ fn child_f32(parent: Node, tag: &str, default: f32) -> f32 {
 
 fn parse_i32_list(s: &str) -> Result<Vec<i32>> {
     s.split(',')
-        .map(|p| p.trim().parse::<i32>().context("Invalid integer in XML list"))
+        .map(|p| {
+            p.trim()
+                .parse::<i32>()
+                .context("Invalid integer in XML list")
+        })
         .collect()
 }
 

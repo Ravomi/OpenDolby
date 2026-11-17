@@ -9,7 +9,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 gpui-kit = "0.9.0"
 hound = "3.5"
-pipewire = "0.9"
+pipewire = { version = "0.9", features = ["v0_3_49"] }
 roxmltree = "0.20"
 
 [[bin]]

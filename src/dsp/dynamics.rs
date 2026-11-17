@@ -22,8 +22,14 @@ impl Lr4Crossover {
     fn new(fs: f32, freq: f32) -> Self {
         let q = std::f32::consts::FRAC_1_SQRT_2;
         Self {
-            lp: [Biquad::lowpass_q(fs, freq, q), Biquad::lowpass_q(fs, freq, q)],
-            hp: [Biquad::highpass_q(fs, freq, q), Biquad::highpass_q(fs, freq, q)],
+            lp: [
+                Biquad::lowpass_q(fs, freq, q),
+                Biquad::lowpass_q(fs, freq, q),
+            ],
+            hp: [
+                Biquad::highpass_q(fs, freq, q),
+                Biquad::highpass_q(fs, freq, q),
+            ],
         }
     }
 
@@ -193,7 +199,8 @@ impl VolumeLeveler {
             0.0
         };
         let desired_lin = db_to_lin(desired_gain_db);
-        self.gain_smooth = self.gain_coeff * self.gain_smooth + (1.0 - self.gain_coeff) * desired_lin;
+        self.gain_smooth =
+            self.gain_coeff * self.gain_smooth + (1.0 - self.gain_coeff) * desired_lin;
 
         (l * self.gain_smooth, r * self.gain_smooth)
     }
