@@ -8,7 +8,7 @@ use gpui_kit::component::{
     h_flex,
     slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
-    v_flex, ActiveTheme, Root, Sizable, Theme, ThemeMode,
+    v_flex, ActiveTheme, Disableable, Root, Sizable, Theme, ThemeMode,
 };
 use gpui_kit::{
     div, prelude::*, px, size, Bounds, Context, Entity, SharedString, Subscription, Window,
@@ -69,24 +69,18 @@ impl DolbyGui {
                 .default_value(1.0)
         });
 
-        let sub_surround = cx.subscribe(
-            &surround_slider,
-            |this, _, event: &SliderEvent, cx| {
-                if let SliderEvent::Change(val) = event {
-                    this.set_surround_amount(val.start());
-                    cx.notify();
-                }
-            },
-        );
-        let sub_dialog = cx.subscribe(
-            &dialog_slider,
-            |this, _, event: &SliderEvent, cx| {
-                if let SliderEvent::Change(val) = event {
-                    this.set_dialog_amount(val.start());
-                    cx.notify();
-                }
-            },
-        );
+        let sub_surround = cx.subscribe(&surround_slider, |this, _, event: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) = event {
+                this.set_surround_amount(val.start());
+                cx.notify();
+            }
+        });
+        let sub_dialog = cx.subscribe(&dialog_slider, |this, _, event: &SliderEvent, cx| {
+            if let SliderEvent::Change(val) = event {
+                this.set_dialog_amount(val.start());
+                cx.notify();
+            }
+        });
 
         Self {
             tuning,
@@ -162,7 +156,7 @@ impl DolbyGui {
         if let Some(ref handle) = self.engine {
             handle.set_bypass(bypass);
             self.status = if bypass {
-                "直通模式 (Bypass): 未经 DSP 处理".into()
+                "直通模式 (Bypass): 跳过音效处理（保留 RMS 匹配与安全限幅）".into()
             } else {
                 format!("处理中 (Processed) · 配置: {}", self.active_profile).into()
             };
@@ -175,9 +169,9 @@ impl DolbyGui {
             handle.set_level_match(level_match);
         }
         self.status = if level_match {
-            "等响度 A/B 已开启 (近似 RMS 匹配)".into()
+            "RMS匹配 A/B 已开启".into()
         } else {
-            "等响度 A/B 已关闭".into()
+            "RMS匹配 A/B 已关闭".into()
         };
     }
 
@@ -317,7 +311,7 @@ impl Render for DolbyGui {
             .and_then(|t| t.profiles.get(&self.active_profile));
 
         let surround_enabled_in_profile = profile_details
-            .map(|p| p.cp.surround_virtualizer_enable)
+            .map(|p| p.cp.surround_virtualizer_enable || p.cp.surround_decoder_enable)
             .unwrap_or(false);
         let dialog_enabled_in_profile = profile_details
             .map(|p| p.cp.dialog_enhancer_enable)
@@ -332,9 +326,7 @@ impl Render for DolbyGui {
             .gap_4()
             .overflow_y_scroll()
             .child(
-                h_flex()
-                    .justify_between()
-                    .items_center()
+                v_flex()
                     .gap_3()
                     .child(
                         v_flex()
@@ -348,7 +340,9 @@ impl Render for DolbyGui {
                             ),
                     )
                     .child(
-                        h_flex()
+                        div()
+                            .flex()
+                            .flex_wrap()
                             .gap_4()
                             .items_center()
                             .child(
@@ -368,9 +362,9 @@ impl Render for DolbyGui {
                                 Switch::new("level-match-switch")
                                     .checked(self.level_match)
                                     .label(if self.level_match {
-                                        "等响度 A/B 开"
+                                        "RMS匹配 A/B 开"
                                     } else {
-                                        "等响度 A/B 关"
+                                        "RMS匹配 A/B 关"
                                     })
                                     .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.toggle_level_match(*checked);
@@ -508,7 +502,11 @@ impl Render for DolbyGui {
                                 ("Volume Leveler", p.cp.volume_leveler_enable),
                                 ("Dialog Enhancer", p.cp.dialog_enhancer_enable),
                                 ("Intelligent EQ", p.cp.ieq_enable),
-                                ("Surround Virtualizer", p.cp.surround_virtualizer_enable),
+                                (
+                                    "Surround Virtualizer",
+                                    p.cp.surround_virtualizer_enable
+                                        || p.cp.surround_decoder_enable,
+                                ),
                                 ("Audio Optimizer", p.vlldp.audio_optimizer_enable),
                                 ("Speaker PEQ", p.vlldp.speaker_peq_enable),
                                 ("4-Band MBC", p.vlldp.mb_compressor_enable),
@@ -564,6 +562,7 @@ impl Render for DolbyGui {
                                     .label("使用 OpenDolby 输出")
                                     .small()
                                     .primary()
+                                    .disabled(!running)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.set_default_sink(
                                             OUR_SINK_PATTERN,
@@ -654,7 +653,10 @@ Audio
             parse_wpctl_sink_id(SAMPLE_WPCTL_STATUS, "Raptor Lake-P/U/H cAVS Speaker"),
             Some("56".to_string())
         );
-        assert!(parse_is_sink_default(SAMPLE_WPCTL_STATUS, "Dolby Atmos Rust"));
+        assert!(parse_is_sink_default(
+            SAMPLE_WPCTL_STATUS,
+            "Dolby Atmos Rust"
+        ));
         assert!(!parse_is_sink_default(
             SAMPLE_WPCTL_STATUS,
             "Raptor Lake-P/U/H cAVS Speaker"
