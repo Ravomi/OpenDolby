@@ -1,16 +1,22 @@
 #[path = "dolby_gui/assets.rs"]
 mod assets;
+#[path = "dolby_gui/device_info.rs"]
+mod device_info;
 #[path = "dolby_gui/instance.rs"]
 mod instance;
 #[path = "dolby_gui/palette.rs"]
 mod palette;
+#[path = "dolby_gui/preferences.rs"]
+mod preferences;
+#[path = "dolby_gui/settings.rs"]
+mod settings;
 #[path = "dolby_gui/view.rs"]
 mod view;
 #[path = "dolby_gui/view_pages.rs"]
 mod view_pages;
 
 use clap::Parser;
-use dolby_rs::audio_devices::{self, choose_internal_speaker, DeviceInventory, OutputDevice};
+use dolby_rs::audio_devices::{self, DeviceInventory, OutputDevice};
 use dolby_rs::default_xml_path;
 use dolby_rs::dsp::DolbyProcessor;
 use dolby_rs::pw_sink::{spawn_pipewire_sink, EngineHandle};
@@ -23,6 +29,7 @@ use gpui_kit::{
     prelude::*, px, size, Bounds, Context, Entity, SharedString, Subscription, Window,
     WindowBounds, WindowOptions,
 };
+use palette::ThemePreference;
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Parser)]
@@ -54,11 +61,18 @@ const VIRTUAL_SINK: &str = "dolby_atmos_rust";
 enum Page {
     Sound,
     Output,
+    Settings,
     About,
 }
 
 struct DolbyGui {
     tuning: Option<DeviceTuning>,
+    xml_path: PathBuf,
+    theme_preference: ThemePreference,
+    auto_target: bool,
+    hardware_name: String,
+    settings_error: Option<String>,
+    _appearance_subscription: Option<Subscription>,
     active_profile: String,
     page: Page,
     show_details: bool,
@@ -80,6 +94,14 @@ struct DolbyGui {
 
 impl DolbyGui {
     fn new(xml: &std::path::Path, cx: &mut Context<Self>) -> Self {
+        let (preferences, settings_error) = match preferences::Preferences::load() {
+            Ok(preferences) => (preferences, None),
+            Err(error) => (
+                preferences::Preferences::default(),
+                Some(format!("{error:#}")),
+            ),
+        };
+        palette::apply(preferences.theme, cx);
         let (tuning, status) = match DeviceTuning::from_xml_file(xml) {
             Ok(t) => (Some(t), "就绪，启动引擎即可使用".into()),
             Err(error) => {
@@ -94,8 +116,12 @@ impl DolbyGui {
             Ok(inventory) => (inventory.outputs, inventory.default_sink, None),
             Err(error) => (Vec::new(), None, Some(format!("{error:#}"))),
         };
-        let target_sink = choose_internal_speaker(&outputs, default_sink.as_deref())
-            .map(|device| device.name.clone());
+        let target_sink = device_info::resolve_target(
+            &outputs,
+            preferences.manual_target.as_deref(),
+            default_sink.as_deref(),
+            preferences.auto_target,
+        );
         let surround_slider = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
@@ -124,6 +150,12 @@ impl DolbyGui {
         });
         Self {
             tuning,
+            xml_path: xml.to_path_buf(),
+            theme_preference: preferences.theme,
+            auto_target: preferences.auto_target,
+            hardware_name: device_info::machine_label(),
+            settings_error,
+            _appearance_subscription: None,
             active_profile: "dynamic".into(),
             page: Page::Sound,
             show_details: false,
@@ -148,13 +180,21 @@ impl DolbyGui {
         self.engine.is_some()
     }
 
-    fn status_json(&self, window_open: bool) -> String {
+    fn status_json(&self, window_open: bool, cx: &gpui_kit::App) -> String {
         serde_json::json!({
             "pid": std::process::id(),
             "running": self.engine.is_some(),
             "profile": self.active_profile,
             "window_open": window_open,
             "target_sink": self.target_sink,
+            "hardware": self.hardware_name,
+            "auto_target": self.auto_target,
+            "theme": self.theme_preference.as_str(),
+            "dark": gpui_kit::component::theme::Theme::global(cx).is_dark(),
+            "page": match self.page { Page::Sound => "sound", Page::Output => "output", Page::Settings => "settings", Page::About => "about" },
+            "tuning_loaded": self.tuning.is_some(),
+            "xml_path": self.xml_path,
+            "settings_error": self.settings_error,
             "bypass": self.bypass,
             "level_match": self.level_match,
             "surround_amount": self.surround_amount,
@@ -311,12 +351,24 @@ impl DolbyGui {
                     self.status =
                         "处理已暂停：扬声器已断开或切换了端口，请重新检查输出设备。".into();
                 }
+                if self.engine.is_none() {
+                    self.target_sink = device_info::resolve_target(
+                        &self.outputs,
+                        self.target_sink.as_deref(),
+                        self.default_sink.as_deref(),
+                        self.auto_target,
+                    );
+                }
             }
             Err(error) => self.device_error = Some(format!("{error:#}")),
         }
     }
 
     fn select_output_target(&mut self, name: &str) {
+        if self.auto_target {
+            self.status = "请先关闭自动选择，再手动指定处理目标。".into();
+            return;
+        }
         if self.engine.is_some() {
             self.status = "请先停止音效，再更换处理目标。".into();
             return;
@@ -327,6 +379,7 @@ impl DolbyGui {
             return;
         }
         self.target_sink = Some(name.to_string());
+        self.persist_settings();
         self.status = "处理目标已更新，请确认调音 XML 属于这台设备。".into();
     }
 
@@ -449,6 +502,20 @@ fn open_or_activate_window(cx: &mut gpui_kit::App) {
             window.set_window_title("OpenDolby");
             window.set_app_id("dolby-gui");
             let view = cx.global::<AppState>().gui.clone();
+            view.update(cx, |this, cx| {
+                palette::apply_with_appearance(this.theme_preference, window.appearance(), cx);
+                this._appearance_subscription =
+                    Some(cx.observe_window_appearance(window, |this, window, cx| {
+                        if this.theme_preference == ThemePreference::System {
+                            palette::apply_with_appearance(
+                                ThemePreference::System,
+                                window.appearance(),
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                    }));
+            });
             cx.new(|cx| Root::new(view, window, cx))
         },
     )
@@ -461,7 +528,7 @@ fn handle_ipc_request(req: instance::IpcRequest, cx: &mut gpui_kit::App) {
         instance::IpcCommand::Activate => {
             open_or_activate_window(cx);
             let window_open = !cx.windows().is_empty();
-            gui.read(cx).status_json(window_open)
+            gui.read(cx).status_json(window_open, cx)
         }
         instance::IpcCommand::Start => {
             gui.update(cx, |this, cx| {
@@ -469,7 +536,7 @@ fn handle_ipc_request(req: instance::IpcRequest, cx: &mut gpui_kit::App) {
                 cx.notify();
             });
             let window_open = !cx.windows().is_empty();
-            gui.read(cx).status_json(window_open)
+            gui.read(cx).status_json(window_open, cx)
         }
         instance::IpcCommand::Stop => {
             gui.update(cx, |this, cx| {
@@ -477,11 +544,11 @@ fn handle_ipc_request(req: instance::IpcRequest, cx: &mut gpui_kit::App) {
                 cx.notify();
             });
             let window_open = !cx.windows().is_empty();
-            gui.read(cx).status_json(window_open)
+            gui.read(cx).status_json(window_open, cx)
         }
         instance::IpcCommand::Status => {
             let window_open = !cx.windows().is_empty();
-            gui.read(cx).status_json(window_open)
+            gui.read(cx).status_json(window_open, cx)
         }
         instance::IpcCommand::Quit => {
             gui.update(cx, |this, cx| {
@@ -570,7 +637,16 @@ fn main() {
     }
 
     let xml_explicit = args.xml.is_some();
-    let xml = args.xml.unwrap_or_else(default_xml_path);
+    let xml = args.xml.unwrap_or_else(|| {
+        if std::env::var_os("OPENDOLBY_XML").is_some_and(|value| !value.is_empty()) {
+            default_xml_path()
+        } else {
+            preferences::Preferences::load()
+                .ok()
+                .and_then(|preferences| preferences.xml_path)
+                .unwrap_or_else(default_xml_path)
+        }
+    });
 
     let (ipc_rx, socket_guard) = match instance::bind_or_connect(&sock_path) {
         Ok(instance::BindOutcome::Bound(listener)) => instance::spawn_listener(listener, sock_path),
@@ -612,8 +688,6 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             cx.set_app_identity("dolby-gui", "OpenDolby");
-            palette::apply(cx);
-
             let gui = cx.new(|cx| DolbyGui::new(&xml, cx));
             if auto_start {
                 gui.update(cx, |this, cx| {

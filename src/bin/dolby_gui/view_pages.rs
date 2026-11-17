@@ -3,20 +3,30 @@ use dolby_rs::audio_devices::DeviceKind;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
-    h_flex, v_flex, Disableable, Sizable,
+    h_flex,
+    switch::Switch,
+    v_flex, Disableable, Sizable,
 };
 use gpui_kit::{div, prelude::*, px, rgb, AnyElement, Context, Div, SharedString};
 
-fn note(text: impl Into<SharedString>) -> Div {
-    div().text_xs().text_color(rgb(MUTED)).child(text.into())
+fn note(text: impl Into<SharedString>, colors: Palette) -> Div {
+    div()
+        .text_xs()
+        .text_color(rgb(colors.muted))
+        .child(text.into())
 }
 
-fn rule() -> Div {
-    div().w_full().h(px(1.0)).flex_shrink_0().bg(rgb(LINE))
+fn rule(colors: Palette) -> Div {
+    div()
+        .w_full()
+        .h(px(1.0))
+        .flex_shrink_0()
+        .bg(rgb(colors.line))
 }
 
 impl DolbyGui {
     pub(super) fn render_output(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = colors(cx);
         let running = self.engine.is_some();
         let routed_to_virtual = self.default_sink.as_deref() == Some(VIRTUAL_SINK);
         let target_label: SharedString = self
@@ -70,9 +80,47 @@ impl DolbyGui {
                             .font_semibold()
                             .child("输出设备"),
                     )
-                    .child(note("管理内置扬声器处理目标与系统默认音频路由。")),
+                    .child(note(
+                        format!(
+                            "本机已识别：{} · 自动检测每 2 秒刷新，管理内置扬声器处理目标与系统默认音频路由。",
+                            self.hardware_name
+                        ),
+                        colors,
+                    )),
             )
-            .child(rule())
+            .child(rule(colors))
+            .child(
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().font_semibold().child("自动目标选择"))
+                            .child(note(
+                                if self.auto_target {
+                                    "已开启：自动保留或切换至可用的本机内置扬声器；关闭自动后可手动指定处理目标。"
+                                } else {
+                                    "已关闭：保持当前手动指定的处理目标；请在下方设备列表中手动指定内置扬声器。"
+                                },
+                                colors,
+                            )),
+                    )
+                    .child(
+                        Switch::new("auto-target")
+                            .checked(self.auto_target)
+                            .label("自动选择内置扬声器")
+                            .on_click(cx.listener(|this, enabled: &bool, _, cx| {
+                                this.set_auto_target(*enabled);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(rule(colors))
             .child(
                 h_flex()
                     .w_full()
@@ -90,18 +138,24 @@ impl DolbyGui {
                                     .items_center()
                                     .child(div().font_semibold().child("当前处理目标"))
                                     .child(
-                                        div().text_color(rgb(TEXT)).truncate().child(target_label),
+                                        div()
+                                            .text_color(rgb(colors.text))
+                                            .truncate()
+                                            .child(target_label),
                                     ),
                             )
-                            .child(note(if running {
-                                if routed_to_virtual {
-                                    "虚拟输出已启动，系统默认音频正经由 OpenDolby 处理。"
+                            .child(note(
+                                if running {
+                                    if routed_to_virtual {
+                                        "虚拟输出已启动，系统默认音频正经由 OpenDolby 处理。"
+                                    } else {
+                                        "音效引擎已启动，但系统默认输出尚未切至虚拟设备。"
+                                    }
                                 } else {
-                                    "音效引擎已启动，但系统默认输出尚未切至虚拟设备。"
-                                }
-                            } else {
-                                "音效引擎未启动；启动后可将系统音频路由至虚拟输出。"
-                            })),
+                                    "音效引擎未启动；启动后可将系统音频路由至虚拟输出。"
+                                },
+                                colors,
+                            )),
                     )
                     .child(
                         h_flex()
@@ -141,11 +195,11 @@ impl DolbyGui {
                     .w_full()
                     .py_2()
                     .border_l_2()
-                    .border_color(rgb(ACCENT))
+                    .border_color(rgb(colors.accent))
                     .pl_3()
                     .gap_1()
                     .child(div().font_semibold().child("设备读取失败"))
-                    .child(note(err.clone())),
+                    .child(note(err.clone(), colors)),
             );
         } else if self.target_sink.is_some() && !target_available {
             page = page.child(
@@ -153,23 +207,24 @@ impl DolbyGui {
                     .w_full()
                     .py_2()
                     .border_l_2()
-                    .border_color(rgb(ACCENT))
+                    .border_color(rgb(colors.accent))
                     .pl_3()
                     .gap_1()
                     .child(div().font_semibold().child("适配警告"))
                     .child(note(
                         "当前处理目标不可用或非内置扬声器，已阻止错误应用本机扬声器调音。",
+                        colors,
                     )),
             );
         }
 
-        page = page.child(rule()).child(
+        page = page.child(rule(colors)).child(
             v_flex()
                 .w_full()
                 .gap_3()
                 .child(div().font_semibold().child("设备列表"))
                 .children(if sorted_outputs.is_empty() {
-                    vec![note("未发现音频输出设备。").into_any_element()]
+                    vec![note("未发现音频输出设备。", colors).into_any_element()]
                 } else {
                     sorted_outputs
                         .into_iter()
@@ -189,7 +244,8 @@ impl DolbyGui {
                             };
                             let avail_label = if dev.available { "可用" } else { "不可用" };
 
-                            let can_set_target = !running
+                            let can_set_target = !self.auto_target
+                                && !running
                                 && dev.available
                                 && dev.is_internal_speaker
                                 && !dev.is_virtual
@@ -224,15 +280,16 @@ impl DolbyGui {
                                                                 .child(dev.description),
                                                         )
                                                         .when(is_target, |s| {
-                                                            s.child(note("· 处理目标"))
+                                                            s.child(note("· 处理目标", colors))
                                                         })
                                                         .when(is_default, |s| {
-                                                            s.child(note("· 当前默认"))
+                                                            s.child(note("· 当前默认", colors))
                                                         }),
                                                 )
-                                                .child(note(format!(
-                                                    "{kind_label} · {avail_label}"
-                                                ))),
+                                                .child(note(
+                                                    format!("{kind_label} · {avail_label}"),
+                                                    colors,
+                                                )),
                                         )
                                         .child(h_flex().gap_2().flex_shrink_0().when(
                                             !dev.is_virtual,
@@ -280,7 +337,7 @@ impl DolbyGui {
                                             },
                                         )),
                                 )
-                                .child(rule())
+                                .child(rule(colors))
                                 .into_any_element()
                         })
                         .collect()
@@ -289,11 +346,13 @@ impl DolbyGui {
 
         page.child(note(
             "仅对内置扬声器使用同机 OEM 调音文件。识别到设备不代表该机型已完成适配验证。",
+            colors,
         ))
         .into_any_element()
     }
 
-    pub(super) fn render_about(&self) -> AnyElement {
+    pub(super) fn render_about(&self, cx: &mut Context<Self>) -> AnyElement {
+        let colors = colors(cx);
         let version = env!("CARGO_PKG_VERSION");
         v_flex()
             .w_full()
@@ -314,7 +373,7 @@ impl DolbyGui {
                                     .w(px(36.0))
                                     .h(px(28.0))
                                     .flex_shrink_0()
-                                    .text_color(rgb(brand_mark_color(BG))),
+                                    .text_color(rgb(brand_mark_color(colors.bg))),
                             )
                             .child(
                                 div()
@@ -324,11 +383,14 @@ impl DolbyGui {
                                     .child("OpenDolby"),
                             ),
                     )
-                    .child(note(format!(
-                        "版本 {version} · 原生 Linux 笔记本扬声器调音与 PipeWire 实时处理工具"
-                    ))),
+                    .child(note(
+                        format!(
+                            "版本 {version} · 原生 Linux 笔记本扬声器调音与 PipeWire 实时处理工具"
+                        ),
+                        colors,
+                    )),
             )
-            .child(rule())
+            .child(rule(colors))
             .child(
                 v_flex()
                     .gap_3()
@@ -336,9 +398,18 @@ impl DolbyGui {
                     .child(
                         v_flex()
                             .gap_2()
-                            .child(note("• 直接解析本机 OEM 调音 XML，以 48 kHz / 2 ch 实时运行 DSP 处理。"))
-                            .child(note("• 仅对已确认的内置扬声器应用本机调音，避免误将扬声器校准施加到耳机或外接设备。"))
-                            .child(note("• 退出或目标设备断开时自动恢复系统默认输出，不修改原始硬件调音文件。")),
+                            .child(note(
+                                "• 直接解析本机 OEM 调音 XML，以 48 kHz / 2 ch 实时运行 DSP 处理。",
+                                colors,
+                            ))
+                            .child(note(
+                                "• 仅对已确认的内置扬声器应用本机调音，避免误将扬声器校准施加到耳机或外接设备。",
+                                colors,
+                            ))
+                            .child(note(
+                                "• 退出或目标设备断开时自动恢复系统默认输出，不修改原始硬件调音文件。",
+                                colors,
+                            )),
                     ),
             )
             .into_any_element()
