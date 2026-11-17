@@ -1,4 +1,6 @@
+use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -6,6 +8,7 @@ use std::time::Duration;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+const QUIT_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IpcCommand {
@@ -42,6 +45,7 @@ impl IpcCommand {
 pub struct IpcRequest {
     pub command: IpcCommand,
     pub reply: mpsc::SyncSender<String>,
+    pub flushed: mpsc::Receiver<()>,
 }
 
 pub enum BindOutcome {
@@ -61,17 +65,33 @@ impl SocketGuard {
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.path);
     }
 }
 
 pub fn default_socket_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         if !runtime_dir.trim().is_empty() {
-            return PathBuf::from(runtime_dir).join("dolby-gui.sock");
+            return PathBuf::from(runtime_dir).join("opendolby").join("gui.sock");
         }
     }
-    std::env::temp_dir().join("dolby-gui.sock")
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            return PathBuf::from(home)
+                .join(".cache")
+                .join("opendolby")
+                .join("run")
+                .join("gui.sock");
+        }
+    }
+    PathBuf::from(".opendolby-run").join("gui.sock")
+}
+
+pub fn is_not_running_error(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+    )
 }
 
 pub fn send_command(path: &Path, command: IpcCommand) -> io::Result<String> {
@@ -94,39 +114,52 @@ pub fn send_command(path: &Path, command: IpcCommand) -> io::Result<String> {
     Ok(response.trim_end_matches(['\r', '\n']).to_string())
 }
 
+fn ensure_private_dir(dir: &Path) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn bind_private_socket(path: &Path) -> io::Result<UnixListener> {
+    let listener = UnixListener::bind(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 pub fn bind_or_connect(path: &Path) -> io::Result<BindOutcome> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path.parent().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "socket path has no parent dir")
+    })?;
+    ensure_private_dir(parent)?;
 
-    for attempt in 0..3 {
-        match UnixListener::bind(path) {
-            Ok(listener) => return Ok(BindOutcome::Bound(listener)),
-            Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-                match send_command(path, IpcCommand::Status) {
-                    Ok(_) => return Ok(BindOutcome::AlreadyRunning),
-                    Err(conn_err)
-                        if matches!(
-                            conn_err.kind(),
-                            io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
-                        ) =>
-                    {
-                        let _ = std::fs::remove_file(path);
-                        if attempt == 2 {
-                            return UnixListener::bind(path).map(BindOutcome::Bound);
-                        }
-                    }
-                    Err(conn_err) => return Err(conn_err),
+    let lock_path = parent.join("instance.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o600))?;
+    lock_file.lock()?;
+
+    match bind_private_socket(path) {
+        Ok(listener) => Ok(BindOutcome::Bound(listener)),
+        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
+            match send_command(path, IpcCommand::Status) {
+                Ok(_) => Ok(BindOutcome::AlreadyRunning),
+                Err(conn_err) if is_not_running_error(&conn_err) => {
+                    let _ = fs::remove_file(path);
+                    bind_private_socket(path).map(BindOutcome::Bound)
                 }
+                Err(conn_err) => Err(conn_err),
             }
-            Err(err) => return Err(err),
         }
+        Err(err) => Err(err),
     }
+}
 
-    Err(io::Error::new(
-        io::ErrorKind::AddrInUse,
-        "failed to bind or connect to dolby-gui IPC socket",
-    ))
+pub fn wait_for_quit_flush(flushed_rx: &mpsc::Receiver<()>) {
+    let _ = flushed_rx.recv_timeout(QUIT_FLUSH_TIMEOUT);
 }
 
 pub fn spawn_listener(
@@ -168,10 +201,21 @@ fn handle_client(
         }
     }
 
+    let (flushed_tx, flushed_rx) = mpsc::sync_channel(1);
+    let mut notify_flush: Option<mpsc::SyncSender<()>> = None;
+
     let response = match IpcCommand::parse(&line) {
         Some(command) => {
             let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-            if tx.send_blocking(IpcRequest { command, reply: reply_tx }).is_err() {
+            notify_flush = Some(flushed_tx);
+            if tx
+                .send_blocking(IpcRequest {
+                    command,
+                    reply: reply_tx,
+                    flushed: flushed_rx,
+                })
+                .is_err()
+            {
                 r#"{"ok":false,"error":"gui event loop closed"}"#.to_string()
             } else {
                 reply_rx.recv_timeout(REPLY_TIMEOUT).unwrap_or_else(|_| {
@@ -184,16 +228,20 @@ fn handle_client(
 
     writeln!(stream, "{response}")?;
     stream.flush()?;
+    if let Some(tx) = notify_flush {
+        let _ = tx.send(());
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn temp_sock(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> PathBuf {
         let unique = format!(
-            "dolby-gui-test-{}-{}-{}.sock",
+            "dolby-gui-test-{}-{}-{}",
             name,
             std::process::id(),
             std::time::SystemTime::now()
@@ -205,16 +253,37 @@ mod tests {
     }
 
     #[test]
+    fn socket_and_dir_permissions_are_private() {
+        let dir = temp_dir("perms");
+        let sock = dir.join("gui.sock");
+
+        let listener = match bind_or_connect(&sock).unwrap() {
+            BindOutcome::Bound(l) => l,
+            BindOutcome::AlreadyRunning => panic!("expected fresh bind"),
+        };
+        let _guard = SocketGuard::new(sock.clone());
+
+        let dir_mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        let sock_mode = fs::metadata(&sock).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700);
+        assert_eq!(sock_mode, 0o600);
+
+        drop(listener);
+        drop(_guard);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn stale_socket_is_replaced_and_new_listener_accepts_commands() {
-        let sock = temp_sock("stale");
-        // Create a stale socket by binding and dropping the listener without removing the file.
+        let dir = temp_dir("stale");
+        let sock = dir.join("gui.sock");
+        ensure_private_dir(&dir).unwrap();
         {
             let _listener = UnixListener::bind(&sock).unwrap();
         }
         assert!(sock.exists());
 
-        let outcome = bind_or_connect(&sock).unwrap();
-        let listener = match outcome {
+        let listener = match bind_or_connect(&sock).unwrap() {
             BindOutcome::Bound(l) => l,
             BindOutcome::AlreadyRunning => panic!("stale socket should have been replaced"),
         };
@@ -231,36 +300,40 @@ mod tests {
         let resp = send_command(&sock, IpcCommand::Status).unwrap();
         assert!(resp.contains(r#""running":false"#));
         handle.join().unwrap();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn active_socket_is_preserved_and_reports_already_running() {
-        let sock = temp_sock("active");
-        let listener = match bind_or_connect(&sock).unwrap() {
-            BindOutcome::Bound(l) => l,
-            BindOutcome::AlreadyRunning => panic!("expected fresh bind"),
-        };
-        let (rx, _guard) = spawn_listener(listener, sock.clone());
+    fn concurrent_bind_or_connect_only_allows_one_winner() {
+        let dir = temp_dir("concurrent");
+        let sock = Arc::new(dir.join("gui.sock"));
 
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let req = rx.recv_blocking().unwrap();
-                let resp = match req.command {
-                    IpcCommand::Status => r#"{"pid":42,"running":true,"profile":"movie","window_open":false}"#,
-                    IpcCommand::Activate => r#"{"ok":true,"window_open":true}"#,
-                    _ => r#"{"ok":true}"#,
-                };
-                req.reply.send(resp.into()).unwrap();
-            }
-        });
-
-        match bind_or_connect(&sock).unwrap() {
-            BindOutcome::AlreadyRunning => {}
-            BindOutcome::Bound(_) => panic!("active socket must not be overwritten"),
+        let barrier = Arc::new(std::sync::Barrier::new(6));
+        let mut handles = Vec::new();
+        for _ in 0..6 {
+            let sock = Arc::clone(&sock);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                match bind_or_connect(&sock).unwrap() {
+                    BindOutcome::Bound(listener) => {
+                        let (rx, guard) = spawn_listener(listener, sock.to_path_buf());
+                        // Serve Status probes from peers while they race.
+                        for _ in 0..5 {
+                            if let Ok(req) = rx.recv_blocking() {
+                                let _ = req.reply.send(r#"{"pid":1,"running":false,"profile":"dynamic","window_open":true}"#.into());
+                            }
+                        }
+                        drop(guard);
+                        1usize
+                    }
+                    BindOutcome::AlreadyRunning => 0usize,
+                }
+            }));
         }
 
-        let resp = send_command(&sock, IpcCommand::Activate).unwrap();
-        assert!(resp.contains(r#""window_open":true"#));
-        server.join().unwrap();
+        let winners: usize = handles.into_iter().map(|h| h.join().unwrap()).sum();
+        assert_eq!(winners, 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

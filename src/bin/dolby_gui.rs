@@ -405,6 +405,7 @@ fn handle_ipc_request(req: instance::IpcRequest, cx: &mut gpui_kit::App) {
                 std::process::id()
             );
             let _ = req.reply.send(resp);
+            instance::wait_for_quit_flush(&req.flushed);
             cx.quit();
             return;
         }
@@ -419,7 +420,13 @@ fn main() {
     if args.status {
         match instance::send_command(&sock_path, instance::IpcCommand::Status) {
             Ok(resp) => println!("{resp}"),
-            Err(_) => println!(r#"{{"pid":null,"running":false,"profile":null,"window_open":false}}"#),
+            Err(err) if instance::is_not_running_error(&err) => {
+                println!(r#"{{"pid":null,"running":false,"profile":null,"window_open":false}}"#);
+            }
+            Err(err) => {
+                eprintln!("Failed to query dolby-gui status: {err}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -427,7 +434,13 @@ fn main() {
     if args.stop {
         match instance::send_command(&sock_path, instance::IpcCommand::Stop) {
             Ok(resp) => println!("{resp}"),
-            Err(_) => println!(r#"{{"ok":true,"running":false}}"#),
+            Err(err) if instance::is_not_running_error(&err) => {
+                println!(r#"{{"ok":true,"running":false}}"#);
+            }
+            Err(err) => {
+                eprintln!("Failed to stop dolby-gui engine: {err}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -435,7 +448,13 @@ fn main() {
     if args.quit {
         match instance::send_command(&sock_path, instance::IpcCommand::Quit) {
             Ok(resp) => println!("{resp}"),
-            Err(_) => println!(r#"{{"ok":true,"running":false,"quit":true}}"#),
+            Err(err) if instance::is_not_running_error(&err) => {
+                println!(r#"{{"ok":true,"running":false,"quit":true}}"#);
+            }
+            Err(err) => {
+                eprintln!("Failed to quit dolby-gui instance: {err}");
+                std::process::exit(1);
+            }
         }
         return;
     }
