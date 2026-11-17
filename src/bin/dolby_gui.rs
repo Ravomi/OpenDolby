@@ -497,6 +497,7 @@ fn main() {
 
     let auto_start = args.start;
     gpui_kit::application()
+        .with_quit_mode(gpui_kit::QuitMode::Explicit)
         .with_assets(assets::application_assets())
         .run(move |cx| {
             gpui_kit::init(cx);
