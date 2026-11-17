@@ -1468,6 +1468,7 @@ name = "dolby-rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "clap",
  "gpui-kit",
  "hound",

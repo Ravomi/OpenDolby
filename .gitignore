@@ -1,5 +1,7 @@
 /target
 *.wav
+__pycache__/
+*.pyc
 
 # Local configuration and proprietary driver payloads must stay outside Git.
 /tuning.xml

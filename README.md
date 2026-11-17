@@ -1,6 +1,5 @@
 <div align="center">
-  <img src="assets/opendolby.png" alt="OpenDolby Logo" width="96" />
-  <h1>OpenDolby</h1>
+  <img src="docs/images/readme-hero.png" alt="OpenDolby · Linux / PipeWire / Native DSP" width="960" />
   <p>面向 Linux PipeWire 的实验性扬声器 DSP 引擎与 GPUI-Kit 原生控制面板</p>
   <p>
     <img src="https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust" alt="Rust 2021" />
@@ -20,11 +19,11 @@
 
 ## 核心能力
 
-- **10 种引擎预设**：保留全部 10 个调音配置，支持实时切换与基准重置（Reset to baseline）。
+- **预设与实时切换**：主界面展示动态、游戏、电影、音乐、人声、三组自定义，以及关闭音效，支持实时切换与基准重置（Reset to baseline）。引擎仍可读取 XML 中全部 10 个配置，其中额外的 `voice_onlinecourse` 仅可通过 CLI 的 `--profile voice_onlinecourse` 使用，不放入参考布局的侧栏。
 - **实时空间与对白调节**：提供 `Surround` 与 `Dialog` 平滑增益滑块（`0.0` ~ `2.0`，`1.0` 为当前预设近似基准；若 XML 禁用对应效果则滑块不会强行开启）。空间声场采用 M/S 展宽与延时交叉馈送，而非基于对象的 Atmos 渲染。
 - **电平匹配 A/B 对比（Processed / Bypass）**：通过同一虚拟 Sink 并行运行两条路径，切换时进行 20 ms 交叉淡变。默认开启近似电学 RMS 匹配（仅通过衰减对齐较安静的一侧，需 1–2 秒稳定；并非响度/LUFS 标准化）。
 - **Off 直通模式**：独立的纯平直通，不保留扬声器保护 DSP（笔记本扬声器请勿用于高音量低频测试）。
-- **输出设备路由**：在 **Output Devices / 输出设备** 页面选择虚拟输出，物理输出固定指向本机扬声器以避免自环；停止引擎时自动恢复默认扬声器。
+- **后台处理与输出路由**：在 **Output Devices / 输出设备** 页面选择虚拟输出，物理输出固定指向本机扬声器以避免自环。关闭面板继续处理，重新打开复用同一实例；主动停止引擎时才恢复默认扬声器。
 
 ## 依赖与构建
 
@@ -48,7 +47,18 @@ cargo build --release --locked --bins
 ./target/release/dolby-gui
 ```
 
-启动 GUI 后引擎默认处于停止状态；点击启动后，前往 **Output Devices / 输出设备** 页面将系统输出切换至虚拟设备即可生效。
+首次启动 GUI 后引擎默认处于停止状态；点击启动后，前往 **Output Devices / 输出设备** 页面将系统输出切换至虚拟设备即可生效。
+
+**关闭窗口不等于停止音效**：引擎启用时关闭面板，音频处理与输出路由会继续在后台运行。再次点击桌面图标或运行 `dolby-gui`，会重新打开同一实例，保留所选模式与实时调节。需要停用时，主动关闭面板中的 **启用音效** 开关，随后关闭窗口即可退出。也可以从终端控制同一个后台实例：
+
+```sh
+dolby-gui --status  # 查看后台实例、引擎状态与当前模式（JSON）
+dolby-gui --start   # 启动音频引擎，没有实例时打开面板并启动
+dolby-gui --stop    # 停止引擎并移除虚拟输出
+dolby-gui --quit    # 停止引擎并退出整个后台实例
+```
+
+单实例通信仅限本用户，使用私有运行目录与 Unix socket，不开启网络端口。
 
 ### 可选：安装桌面入口
 
@@ -117,7 +127,7 @@ python3 tools/measure_dsp.py --label after --check-matching
 python3 tools/smoke_pipewire.py
 ```
 
-- `cargo test --all-targets`：16 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
+- `cargo test --all-targets --locked`：19 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
 - **离线匹配测量**（`tools/measure_dsp.py`，需 NumPy / SciPy）：8 秒 48 kHz 立体声带限噪声（约 `-29.12 dBFS`）。旧版 Dynamic 输出比输入高 `+17.05 dB RMS`；开启匹配并稳定后，Dynamic / Music / Movie 湿声与旁路差值均小于 `0.001 dB`（仅代表特定信号的电学测量，不代表任意音乐的感知等响度）。
 - **PipeWire 冒烟测试**（`tools/smoke_pipewire.py`）：在临时静音 null sink 捕获 `240000` 帧 48 kHz 立体声，单声道 RMS 约 `0.00360`，输出有限且 1–4 秒区间无 100 ms 静音块；默认硬件扬声器未受影响，未播放测试音。已安装的 PipeWire `1.6.11` 中 `pw-record` 在达到采样数上限时可能返回 `1`，测试脚本仅在错误日志为空且帧数精确匹配时放行并校验样本与路由。
 

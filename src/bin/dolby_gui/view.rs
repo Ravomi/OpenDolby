@@ -62,13 +62,6 @@ const PROFILES: &[Profile] = &[
         description: "让语音内容成为主角，适合播客、会议与日常对白。",
     },
     Profile {
-        id: "voice_onlinecourse",
-        title: "网课",
-        english: "COURSE",
-        icon: "headphones",
-        description: "面向长时间语音内容的配置，减少调节，让注意力留在内容上。",
-    },
-    Profile {
         id: "personalize_user1",
         title: "自定义 1",
         english: "CUSTOM 01",
@@ -256,7 +249,7 @@ impl DolbyGui {
                 let selected = p.id == self.active_profile;
                 div()
                     .id(SharedString::from(format!("profile-{}", p.id)))
-                    .when(index == 6 || index == 9, |row| row.mt_3())
+                    .when(index == 5 || index == 8, |row| row.mt_3())
                     .h(px(43.0))
                     .flex_shrink_0()
                     .pl_4()
@@ -668,7 +661,7 @@ impl DolbyGui {
                     .gap_2()
                     .child(assets::icon("info").size(px(16.0)).text_color(rgb(MUTED)))
                     .child(caption(
-                        "停止引擎时，如当前使用 OpenDolby，会先恢复 Speaker。",
+                        "关闭面板不停止音频。关闭“启用音效”后，才会移除虚拟输出并恢复 Speaker。",
                     )),
             )
             .into_any_element()
@@ -714,7 +707,8 @@ mod tests {
                 .unwrap_or_else(|_| panic!("missing profile icon: {}", p.icon))
                 .is_some());
         }
-        assert_eq!(PROFILES.len(), 10);
+        assert_eq!(PROFILES.len(), 9);
+        assert!(!PROFILES.iter().any(|p| p.id == "voice_onlinecourse"));
         assert_eq!(profile("music").title, "音乐");
         assert_eq!(profile("missing").id, "dynamic");
     }
