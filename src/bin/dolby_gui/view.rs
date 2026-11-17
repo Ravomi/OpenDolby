@@ -19,15 +19,24 @@ pub(super) struct Profile {
 
 #[cfg(test)]
 mod tests {
-    use super::{profile, PROFILES};
+    use super::{assets, profile, PROFILES};
+    use gpui_kit::AssetSource;
 
     #[test]
     fn profiles_have_unique_real_engine_ids_and_clear_fallback() {
+        let app_assets = assets::application_assets();
         let mut ids = std::collections::HashSet::new();
         for profile in PROFILES {
             assert!(ids.insert(profile.id));
             assert!(!profile.title.is_empty());
             assert!(!profile.description.is_empty());
+            let icon_path = format!("icons/{}.svg", profile.icon);
+            assert!(
+                app_assets.load(&icon_path).unwrap().is_some(),
+                "missing icon asset for profile {}: {}",
+                profile.id,
+                icon_path
+            );
         }
         assert_eq!(PROFILES.len(), 9);
         assert!(!PROFILES.iter().any(|p| p.id == "voice_onlinecourse"));
@@ -185,7 +194,16 @@ impl DolbyGui {
                                         }
                                         cx.notify();
                                     }))
-                                    .child(assets::icon(icon_name).size(px(14.0)).flex_shrink_0())
+                                    .child(
+                                        assets::icon(icon_name)
+                                            .size(px(14.0))
+                                            .flex_shrink_0()
+                                            .text_color(rgb(if selected {
+                                                colors.text
+                                            } else {
+                                                colors.muted
+                                            })),
+                                    )
                                     .child(label)
                             }),
                         ),
@@ -324,7 +342,16 @@ impl DolbyGui {
                                 this.select_profile(p.id);
                                 cx.notify();
                             }))
-                            .child(assets::icon(p.icon).size(px(14.0)).flex_shrink_0())
+                            .child(
+                                assets::icon(p.icon)
+                                    .size(px(18.0))
+                                    .flex_shrink_0()
+                                    .text_color(rgb(if selected {
+                                        colors.text
+                                    } else {
+                                        colors.muted
+                                    })),
+                            )
                             .child(p.title),
                     )
             }))
