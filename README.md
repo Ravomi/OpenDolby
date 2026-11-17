@@ -130,7 +130,8 @@ python3 tools/smoke_pipewire.py
 python3 tools/smoke_gui_lifecycle.py --confirm-route-test
 ```
 
-- `cargo test --all-targets --locked`：19 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
+- `cargo test --all-targets --locked`：19 项测试通过（含变长块大小、实时非法值处理、Off 精确直通、匹配 A/B、单实例并发与 socket 权限）。
+- **桌面生命周期回归**（`tools/smoke_gui_lifecycle.py`）：6 项实机检查通过，覆盖运行时关窗保留引擎及路由、重开复用进程和模式且不重复创建 Sink、主动停止恢复硬件输出、停止后关窗退出、显式退出，以及最终恢复原默认输出。
 - **离线匹配测量**（`tools/measure_dsp.py`，需 NumPy / SciPy）：8 秒 48 kHz 立体声带限噪声（约 `-29.12 dBFS`）。旧版 Dynamic 输出比输入高 `+17.05 dB RMS`；开启匹配并稳定后，Dynamic / Music / Movie 湿声与旁路差值均小于 `0.001 dB`（仅代表特定信号的电学测量，不代表任意音乐的感知等响度）。
 - **PipeWire 冒烟测试**（`tools/smoke_pipewire.py`）：在临时静音 null sink 捕获 `240000` 帧 48 kHz 立体声，单声道 RMS 约 `0.00360`，输出有限且 1–4 秒区间无 100 ms 静音块；默认硬件扬声器未受影响，未播放测试音。已安装的 PipeWire `1.6.11` 中 `pw-record` 在达到采样数上限时可能返回 `1`，测试脚本仅在错误日志为空且帧数精确匹配时放行并校验样本与路由。
 

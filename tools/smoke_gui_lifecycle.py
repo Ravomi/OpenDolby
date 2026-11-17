@@ -28,6 +28,22 @@ def wait_for(check, label, timeout=10):
     raise AssertionError(f"Timed out: {label}")
 
 
+def close_panel(pid):
+    def window_id():
+        watcher = subprocess.Popen(["umbriel", "subscribe", "windows"], text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            if not select.select([watcher.stdout], [], [], 5)[0]:
+                raise AssertionError("No compositor window snapshot")
+            windows = json.loads(watcher.stdout.readline())["data"]
+            return next((w["id"] for w in windows if w.get("pid") == pid), None)
+        finally:
+            watcher.terminate()
+            watcher.communicate(timeout=5)
+
+    run("umbriel", "msg", "window-close", wait_for(window_id, "compositor panel"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--confirm-route-test", action="store_true",
@@ -66,17 +82,7 @@ def main():
                  "virtual sink")
         run("pactl", "set-default-sink", "dolby_atmos_rust")
 
-        watcher = subprocess.Popen(["umbriel", "subscribe", "windows"], text=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
-            if not select.select([watcher.stdout], [], [], 5)[0]:
-                raise AssertionError("No compositor window snapshot")
-            windows = json.loads(watcher.stdout.readline())["data"]
-        finally:
-            watcher.terminate()
-            watcher.communicate(timeout=5)
-        window = next(w for w in windows if w.get("pid") == pid)
-        run("umbriel", "msg", "window-close", window["id"])
+        close_panel(pid)
         closed = wait_for(lambda: (s if not (s := status()).get("window_open") else None),
                           "panel closure")
         assert closed["running"] and closed["pid"] == pid, "Closing must keep the engine alive"
@@ -98,6 +104,15 @@ def main():
                  "virtual sink removal")
         assert run("pactl", "get-default-sink") != "dolby_atmos_rust", "Stop did not restore hardware"
         report["explicit_stop_restores_hardware"] = True
+        close_panel(pid)
+        child.wait(timeout=10)
+        assert not status().get("pid"), "Closing a stopped panel must exit"
+        report["closing_stopped_panel_exits"] = True
+
+        child = subprocess.Popen([binary], stdout=log, stderr=log)
+        opened = wait_for(lambda: (s if (s := status()).get("window_open") else None),
+                          "fresh panel for explicit quit")
+        assert opened["pid"] == child.pid, "Fresh launch must own its process"
         run(binary, "--quit")
         child.wait(timeout=10)
         assert not status().get("pid"), "Quit left a background instance"
