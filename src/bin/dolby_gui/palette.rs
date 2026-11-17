@@ -20,9 +20,9 @@ impl ThemePreference {
 
     pub(super) fn label(self) -> &'static str {
         match self {
-            Self::System => "System",
-            Self::Light => "Light",
-            Self::Dark => "Dark",
+            Self::System => "跟随系统",
+            Self::Light => "浅色",
+            Self::Dark => "深色",
         }
     }
 
@@ -318,7 +318,31 @@ mod tests {
             assert!(contrast_ratio(p.muted, p.panel) >= 4.5);
             assert!(contrast_ratio(p.primary_foreground, p.accent) >= 4.5);
             assert!(contrast_ratio(p.primary_foreground, p.cyan) >= 3.5);
-            assert!(contrast_ratio(p.thumb, p.bg) >= 3.0);
+            assert!(contrast_ratio(p.thumb, p.cyan) >= 3.0);
+            assert!(contrast_ratio(p.thumb, p.accent) >= 3.0);
+        }
+    }
+
+    #[test]
+    fn resolve_mode_follows_system_or_manual_preference() {
+        for (appearance, expected_system) in [
+            (WindowAppearance::Light, ThemeMode::Light),
+            (WindowAppearance::VibrantLight, ThemeMode::Light),
+            (WindowAppearance::Dark, ThemeMode::Dark),
+            (WindowAppearance::VibrantDark, ThemeMode::Dark),
+        ] {
+            assert_eq!(
+                resolve_mode(ThemePreference::System, appearance),
+                expected_system
+            );
+            assert_eq!(
+                resolve_mode(ThemePreference::Light, appearance),
+                ThemeMode::Light
+            );
+            assert_eq!(
+                resolve_mode(ThemePreference::Dark, appearance),
+                ThemeMode::Dark
+            );
         }
     }
 }
