@@ -90,6 +90,30 @@ impl Drop for EngineHandle {
     }
 }
 
+/// Detect the hardware ALSA Speaker sink node.name so dolby_atmos_rust_out never loops back to itself.
+pub fn detect_hardware_speaker_sink() -> Option<String> {
+    let out = std::process::Command::new("pw-cli")
+        .args(["ls", "Node"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        if line.contains("node.name") && line.contains("Speaker__sink") {
+            let mut parts = line.split('"');
+            let _ = parts.next();
+            if let Some(name) = parts.next() {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Spawn the PipeWire virtual sink on a dedicated thread and return a control handle.
 pub fn spawn_pipewire_sink(
     processor: DolbyProcessor,
@@ -184,6 +208,8 @@ fn run_pipewire_sink_inner(
     let in_stream = pw::stream::StreamBox::new(&core, "dolby-rs-sink", in_props)
         .context("Failed to create PipeWire virtual sink stream")?;
 
+    let resolved_target = target_sink.or_else(detect_hardware_speaker_sink);
+
     let mut out_props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
@@ -192,9 +218,10 @@ fn run_pipewire_sink_inner(
         *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust Output",
         *pw::keys::AUDIO_CHANNELS => "2",
         "audio.position" => "FL,FR",
-        "node.dont-reconnect" => "false",
+        "node.dont-reconnect" => "true",
+        "node.passive" => "true",
     };
-    if let Some(ref target) = target_sink {
+    if let Some(ref target) = resolved_target {
         out_props.insert("target.object", target.as_str());
     }
 
