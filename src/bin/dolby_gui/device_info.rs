@@ -145,7 +145,10 @@ mod tests {
             ),
         ];
 
-        assert_eq!(resolve_target(&outputs, None, Some("headphones"), true), None);
+        assert_eq!(
+            resolve_target(&outputs, None, Some("headphones"), true),
+            None
+        );
         assert_eq!(resolve_target(&outputs, Some("usb_dac"), None, true), None);
     }
 

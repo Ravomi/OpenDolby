@@ -214,6 +214,15 @@ pub(super) fn apply_with_appearance(
         c.primary_hover = hsla(ctrl.primary_hover);
         c.primary_active = hsla(ctrl.primary_active);
         c.primary_foreground = hsla(p.primary_foreground);
+        c.button_foreground = hsla(p.text);
+        c.button_primary = hsla(p.accent);
+        c.button_primary_hover = hsla(ctrl.primary_hover);
+        c.button_primary_active = hsla(ctrl.primary_active);
+        c.button_primary_foreground = hsla(p.primary_foreground);
+        c.button_secondary = hsla(p.soft_blue);
+        c.button_secondary_hover = hsla(ctrl.secondary_hover);
+        c.button_secondary_active = hsla(ctrl.secondary_active);
+        c.button_secondary_foreground = hsla(p.text);
 
         c.secondary = hsla(p.soft_blue);
         c.secondary_hover = hsla(ctrl.secondary_hover);

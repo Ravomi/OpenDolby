@@ -20,7 +20,8 @@
 ## 界面预览
 
 <div align="center">
-  <img src="docs/images/settings.png" alt="OpenDolby Settings" width="820" />
+  <img src="docs/images/settings.png" alt="OpenDolby 浅色设置页与无框模式图标" width="410" />
+  <img src="docs/images/sound-dark.png" alt="OpenDolby 深色音效面板与模式图标" width="410" />
 </div>
 
 ## 核心功能
@@ -116,7 +117,8 @@ python3 tools/smoke_pipewire.py
 python3 tools/smoke_gui_lifecycle.py --confirm-route-test
 ```
 
-- `cargo test --all-targets --locked`：29 项测试通过（含设备分类与安全目标选择、默认输出恢复策略、黑白标识与文字对比度、变长块大小、实时非法值处理、Off 精确直通、匹配 A/B、单实例并发与 socket 权限）。
+- `cargo test --all-targets --locked`：37 项测试通过（含设备分类与安全自动目标选择、偏好保存与权限、跟随系统主题解析、默认输出恢复策略、黑白标识与文字对比度、变长块大小、实时非法值处理、Off 精确直通、匹配 A/B、单实例并发与 socket 权限）。
+- **原生设置实机检查**：8 项通过，覆盖真实浅色/深色/跟随系统按钮、切换外观不重启引擎、自动/手动目标开关、偏好写盘、设备页机型与目标识别，以及侧栏游戏预设切换。
 - **桌面生命周期回归**（`tools/smoke_gui_lifecycle.py`）：7 项实机检查通过，覆盖运行时关窗保留引擎及路由、重开复用进程和模式且不重复创建 Sink、主动停止恢复硬件输出、不覆盖用户手动更改的默认输出、停止后关窗退出、显式退出，以及最终恢复原默认输出。
 - **离线匹配测量**（`tools/measure_dsp.py`，需 NumPy / SciPy）：8 秒 48 kHz 立体声带限噪声（约 `-29.12 dBFS`）。旧版 Dynamic 输出比输入高 `+17.05 dB RMS`；开启匹配并稳定后，Dynamic / Music / Movie 湿声与旁路差值均小于 `0.001 dB`（仅代表特定信号的电学测量，不代表任意音乐的感知等响度）。
 - **PipeWire 冒烟测试**（`tools/smoke_pipewire.py`）：在临时静音 null sink 捕获 `240000` 帧 48 kHz 立体声，单声道 RMS 约 `0.00360`，输出有限且 1–4 秒区间无 100 ms 静音块；默认硬件扬声器未受影响，未播放测试音。

@@ -320,21 +320,13 @@ impl DolbyGui {
                             .gap_3()
                             .items_center()
                             .border_l_2()
-                            .border_color(rgb(if selected {
-                                colors.accent
-                            } else {
-                                colors.nav
-                            }))
+                            .border_color(rgb(if selected { colors.accent } else { colors.nav }))
                             .bg(rgb(if selected {
                                 colors.soft_blue
                             } else {
                                 colors.nav
                             }))
-                            .text_color(rgb(if selected {
-                                colors.text
-                            } else {
-                                colors.muted
-                            }))
+                            .text_color(rgb(if selected { colors.text } else { colors.muted }))
                             .when(selected, |s| s.font_semibold())
                             .cursor_pointer()
                             .hover(|s| s.text_color(rgb(colors.text)))
