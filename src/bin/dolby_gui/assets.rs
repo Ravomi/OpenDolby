@@ -29,11 +29,20 @@ const LUCIDE_ICONS: &[(&str, &[u8])] = &[
     ("house", include_bytes!("../../../assets/icons/house.svg")),
     ("info", include_bytes!("../../../assets/icons/info.svg")),
     ("mic", include_bytes!("../../../assets/icons/mic.svg")),
+    (
+        "monitor",
+        include_bytes!("../../../assets/icons/monitor.svg"),
+    ),
+    ("moon", include_bytes!("../../../assets/icons/moon.svg")),
     ("music", include_bytes!("../../../assets/icons/music.svg")),
     ("power", include_bytes!("../../../assets/icons/power.svg")),
     (
         "rotate-ccw",
         include_bytes!("../../../assets/icons/rotate-ccw.svg"),
+    ),
+    (
+        "settings",
+        include_bytes!("../../../assets/icons/settings.svg"),
     ),
     (
         "settings-2",
@@ -51,6 +60,7 @@ const LUCIDE_ICONS: &[(&str, &[u8])] = &[
         "speaker",
         include_bytes!("../../../assets/icons/speaker.svg"),
     ),
+    ("sun", include_bytes!("../../../assets/icons/sun.svg")),
     (
         "volume-2",
         include_bytes!("../../../assets/icons/volume-2.svg"),
