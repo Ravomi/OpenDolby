@@ -5,8 +5,10 @@ use pw::properties::properties;
 use pw::spa;
 use pw::spa::pod::Pod;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 /// Lock-free SPSC ring buffer for interleaved stereo f32 frames.
 struct RingBuf {
@@ -52,15 +54,114 @@ impl RingBuf {
     }
 }
 
+/// Handle for controlling a running PipeWire Dolby virtual sink from another thread.
+pub struct EngineHandle {
+    pending_proc: Arc<Mutex<Option<DolbyProcessor>>>,
+    bypass: Arc<AtomicBool>,
+    quit: Arc<AtomicBool>,
+    join: Option<JoinHandle<()>>,
+}
+
+impl EngineHandle {
+    /// Hot-swap the active DSP processor on the next audio callback without blocking.
+    pub fn set_processor(&self, processor: DolbyProcessor) {
+        if let Ok(mut guard) = self.pending_proc.lock() {
+            *guard = Some(processor);
+        }
+    }
+
+    /// Toggle DSP bypass cleanly without tearing down the PipeWire node.
+    pub fn set_bypass(&self, bypass: bool) {
+        self.bypass.store(bypass, Ordering::Relaxed);
+    }
+
+    /// Request the PipeWire main loop to quit and wait for the audio thread to exit.
+    pub fn stop(&mut self) {
+        self.quit.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.join.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for EngineHandle {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Spawn the PipeWire virtual sink on a dedicated thread and return a control handle.
+pub fn spawn_pipewire_sink(
+    processor: DolbyProcessor,
+    target_sink: Option<String>,
+    sample_rate: u32,
+) -> Result<EngineHandle> {
+    let pending_proc = Arc::new(Mutex::new(None));
+    let bypass = Arc::new(AtomicBool::new(false));
+    let quit = Arc::new(AtomicBool::new(false));
+
+    let pending_c = Arc::clone(&pending_proc);
+    let bypass_c = Arc::clone(&bypass);
+    let quit_c = Arc::clone(&quit);
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
+    let join = thread::Builder::new()
+        .name("dolby-pw-sink".into())
+        .spawn(move || {
+            if let Err(err) = run_pipewire_sink_inner(
+                processor,
+                target_sink,
+                sample_rate,
+                pending_c,
+                bypass_c,
+                quit_c,
+                Some(tx.clone()),
+            ) {
+                let _ = tx.send(Err(err));
+            }
+        })
+        .context("Failed to spawn PipeWire thread")?;
+
+    rx.recv()
+        .context("PipeWire thread exited before initialization")??;
+
+    Ok(EngineHandle {
+        pending_proc,
+        bypass,
+        quit,
+        join: Some(join),
+    })
+}
+
 pub fn run_pipewire_sink(
     processor: DolbyProcessor,
     target_sink: Option<String>,
     sample_rate: u32,
 ) -> Result<()> {
+    run_pipewire_sink_inner(
+        processor,
+        target_sink,
+        sample_rate,
+        Arc::new(Mutex::new(None)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+        None,
+    )
+}
+
+fn run_pipewire_sink_inner(
+    processor: DolbyProcessor,
+    target_sink: Option<String>,
+    sample_rate: u32,
+    pending_proc: Arc<Mutex<Option<DolbyProcessor>>>,
+    bypass: Arc<AtomicBool>,
+    quit: Arc<AtomicBool>,
+    ready_tx: Option<std::sync::mpsc::Sender<Result<()>>>,
+) -> Result<()> {
     pw::init();
 
     let mainloop =
-        pw::main_loop::MainLoopBox::new(None).context("Failed to create PipeWire MainLoop")?;
+        pw::main_loop::MainLoopRc::new(None).context("Failed to create PipeWire MainLoop")?;
     let context = pw::context::ContextBox::new(mainloop.loop_(), None)
         .context("Failed to create PipeWire Context")?;
     let core = context.connect(None).context("Failed to connect to PipeWire daemon")?;
@@ -102,9 +203,16 @@ pub fn run_pipewire_sink(
 
     let ring_in = Arc::clone(&ring);
     let proc_in = Arc::clone(&proc_state);
+    let pending_in = Arc::clone(&pending_proc);
+    let bypass_in = Arc::clone(&bypass);
     let _in_listener = in_stream
         .add_local_listener_with_user_data(())
         .process(move |stream, _| {
+            if let Ok(mut guard) = pending_in.try_lock() {
+                if let Some(new_proc) = guard.take() {
+                    *proc_in.borrow_mut() = new_proc;
+                }
+            }
             let Some(mut buffer) = stream.dequeue_buffer() else {
                 return;
             };
@@ -120,7 +228,9 @@ pub fn run_pipewire_sink(
             let samples: &mut [f32] = unsafe {
                 std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, n_floats)
             };
-            proc_in.borrow_mut().process_interleaved(samples);
+            if !bypass_in.load(Ordering::Relaxed) {
+                proc_in.borrow_mut().process_interleaved(samples);
+            }
             ring_in.borrow_mut().push_slice(samples);
         })
         .register()
@@ -198,10 +308,27 @@ pub fn run_pipewire_sink(
         )
         .context("Failed to connect output stream")?;
 
-    println!(
-        "PipeWire virtual sink 'Dolby Atmos Rust (ALC294)' active (rate={} Hz). Ctrl+C to stop.",
-        sample_rate
+    let mainloop_weak = mainloop.downgrade();
+    let _quit_timer = mainloop.loop_().add_timer(move |_| {
+        if quit.load(Ordering::Relaxed) {
+            if let Some(ml) = mainloop_weak.upgrade() {
+                ml.quit();
+            }
+        }
+    });
+    _quit_timer.update_timer(
+        Some(Duration::from_millis(50)),
+        Some(Duration::from_millis(50)),
     );
+
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(Ok(()));
+    } else {
+        println!(
+            "PipeWire virtual sink 'Dolby Atmos Rust (ALC294)' active (rate={} Hz). Ctrl+C to stop.",
+            sample_rate
+        );
+    }
 
     mainloop.run();
     Ok(())

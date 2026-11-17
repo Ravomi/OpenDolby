@@ -7,6 +7,15 @@ description = "Clean-room Rust Dolby DAX3 DSP port for Linux PipeWire, tuned fro
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+gpui-kit = "0.9.0"
 hound = "3.5"
 pipewire = "0.9"
 roxmltree = "0.20"
+
+[[bin]]
+name = "dolby-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "dolby-gui"
+path = "src/bin/dolby_gui.rs"

@@ -1,15 +1,9 @@
-mod dsp;
-mod pw_sink;
-mod tuning;
-
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
-use dsp::DolbyProcessor;
+use dolby_rs::dsp::DolbyProcessor;
+use dolby_rs::tuning::DeviceTuning;
+use dolby_rs::{pw_sink, DEFAULT_XML};
 use std::path::PathBuf;
-use tuning::DeviceTuning;
-
-const DEFAULT_XML: &str =
-    "/home/waya/Downloads/dolby-research/payload/ext_asus/DEV_0294_SUBSYS_10431693_PCI_SUBSYS_16931043.xml";
 
 #[derive(Parser)]
 #[command(name = "dolby-rs", about = "Rust Dolby DAX3 DSP engine for Linux PipeWire")]
