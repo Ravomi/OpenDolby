@@ -1,0 +1,12 @@
+[package]
+name = "dolby-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Clean-room Rust Dolby DAX3 DSP port for Linux PipeWire, tuned from local hardware XML"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hound = "3.5"
+pipewire = "0.9"
+roxmltree = "0.20"
