@@ -72,7 +72,9 @@ impl Drop for SocketGuard {
 pub fn default_socket_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         if !runtime_dir.trim().is_empty() {
-            return PathBuf::from(runtime_dir).join("opendolby").join("gui.sock");
+            return PathBuf::from(runtime_dir)
+                .join("opendolby")
+                .join("gui.sock");
         }
     }
     if let Ok(home) = std::env::var("HOME") {
@@ -186,10 +188,7 @@ pub fn spawn_listener(
     (rx, guard)
 }
 
-fn handle_client(
-    mut stream: UnixStream,
-    tx: &async_channel::Sender<IpcRequest>,
-) -> io::Result<()> {
+fn handle_client(mut stream: UnixStream, tx: &async_channel::Sender<IpcRequest>) -> io::Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
 
@@ -293,7 +292,9 @@ mod tests {
             let req = rx.recv_blocking().unwrap();
             assert_eq!(req.command, IpcCommand::Status);
             req.reply
-                .send(r#"{"pid":123,"running":false,"profile":"dynamic","window_open":true}"#.into())
+                .send(
+                    r#"{"pid":123,"running":false,"profile":"dynamic","window_open":true}"#.into(),
+                )
                 .unwrap();
         });
 
