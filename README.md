@@ -125,6 +125,9 @@ cargo test --all-targets
 python3 tools/measure_dsp.py --label after --check-matching
 # 请先停止 GUI 引擎；仅使用临时静音 null sink：
 python3 tools/smoke_pipewire.py
+# 可选：真实 Umbriel 桌面生命周期测试，需先退出已有 OpenDolby：
+# 会短暂切换默认输出，不播放测试音，并在结束时恢复原输出。
+python3 tools/smoke_gui_lifecycle.py --confirm-route-test
 ```
 
 - `cargo test --all-targets --locked`：19 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
