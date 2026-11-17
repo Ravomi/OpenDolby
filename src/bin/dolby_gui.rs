@@ -72,17 +72,19 @@ impl DolbyGui {
         let sub_surround = cx.subscribe(
             &surround_slider,
             |this, _, event: &SliderEvent, cx| {
-                let SliderEvent::Change(val) = event;
-                this.set_surround_amount(val.start());
-                cx.notify();
+                if let SliderEvent::Change(val) = event {
+                    this.set_surround_amount(val.start());
+                    cx.notify();
+                }
             },
         );
         let sub_dialog = cx.subscribe(
             &dialog_slider,
             |this, _, event: &SliderEvent, cx| {
-                let SliderEvent::Change(val) = event;
-                this.set_dialog_amount(val.start());
-                cx.notify();
+                if let SliderEvent::Change(val) = event {
+                    this.set_dialog_amount(val.start());
+                    cx.notify();
+                }
             },
         );
 
@@ -322,6 +324,7 @@ impl Render for DolbyGui {
             .unwrap_or(false);
 
         v_flex()
+            .id("main-scroll")
             .size_full()
             .bg(bg)
             .text_color(fg)
@@ -601,7 +604,7 @@ fn main() {
         gpui_kit::init(cx);
         Theme::change(ThemeMode::Dark, None, cx);
 
-        cx.on_window_closed(|cx| {
+        cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
             }
