@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand};
 use dolby_rs::dsp::{DolbyProcessor, RuntimeControls};
 use dolby_rs::tuning::DeviceTuning;
-use dolby_rs::{pw_sink, DEFAULT_XML};
+use dolby_rs::{default_xml_path, pw_sink};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -11,8 +11,8 @@ use std::path::PathBuf;
     about = "Rust Dolby DAX3 DSP engine for Linux PipeWire"
 )]
 struct Cli {
-    #[arg(long, default_value = DEFAULT_XML)]
-    xml: PathBuf,
+    #[arg(long)]
+    xml: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -57,7 +57,8 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let tuning = DeviceTuning::from_xml_file(&cli.xml)?;
+    let xml_path = cli.xml.unwrap_or_else(default_xml_path);
+    let tuning = DeviceTuning::from_xml_file(&xml_path)?;
 
     match cli.command {
         Commands::Inspect { profile } => {

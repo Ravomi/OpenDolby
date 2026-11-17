@@ -30,19 +30,21 @@
 
 ### 系统依赖
 
+构建与运行原生 GUI 需要图形会话与可用的 Vulkan 驱动（详见 [GPUI-Kit Linux 安装文档](https://github.com/longbridge/gpui-kit/blob/main/website/docs/installation.md)）：
+
 - **Fedora**:
   ```sh
-  sudo dnf install pipewire-devel clang pkg-config
+  sudo dnf install gcc gcc-c++ clang pkg-config pipewire-devel fontconfig-devel wayland-devel libxkbcommon-x11-devel libX11-devel libxcb-devel openssl-devel libzstd-devel vulkan-loader
   ```
-- **Ubuntu / Debian**:
+- **Ubuntu / Debian**（参照上游依赖整理，尚未在干净的 Ubuntu 机器上实测验证）:
   ```sh
-  sudo apt install libpipewire-0.3-dev clang pkg-config
+  sudo apt install gcc g++ clang pkg-config libpipewire-0.3-dev libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
   ```
 
 ### 编译与运行
 
 ```sh
-cargo build --release --bins
+cargo build --release --locked --bins
 ./target/release/dolby-gui
 ```
 
@@ -50,15 +52,21 @@ cargo build --release --bins
 
 ### 自定义调音 XML
 
-本项目**不捆绑、也不分发**任何 OEM 驱动或调音 XML 文件。
+本项目**不捆绑、也不分发**任何 OEM 驱动或调音 XML 文件。GUI 与 CLI 共用统一的配置发现顺序：
 
-- **CLI**：支持在子命令前通过 `--xml PATH` 指定本机 XML 路径：
-  ```sh
-  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav wet.wav --profile dynamic
-  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav dry.wav --profile dynamic --bypass
-  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav unaligned.wav --profile dynamic --no-level-match
-  ```
-- **GUI**：当前默认读取 `src/lib.rs` 中的本机路径（后续将改为可发现的本地配置文件）。
+1. 命令行参数 `--xml PATH`（优先级最高）
+2. 环境变量 `OPENDOLBY_XML`
+3. `$XDG_CONFIG_HOME/opendolby/tuning.xml` 或 `$HOME/.config/opendolby/tuning.xml`
+
+```sh
+# GUI 指定 XML
+./target/release/dolby-gui --xml /path/to/tuning.xml
+
+# CLI 指定 XML
+./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav wet.wav --profile dynamic
+./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav dry.wav --profile dynamic --bypass
+./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav unaligned.wav --profile dynamic --no-level-match
+```
 
 ## 常见音频恢复
 
@@ -73,7 +81,7 @@ cargo build --release --bins
 
 ## 界面与图标设计约定
 
-- **布局参考**：参考常见音频控制面板的层级结构（顶部导航 + 左侧聆听模式 + 右侧当前场景设置），采用深色背景与克制的青色选中态，纯 GPUI-Kit 原生渲染，不嵌入网页视图。
+- **布局参考**：参考 Dolby Access 设置页的层级结构（顶部导航 + 左侧聆听模式 + 右侧当前场景设置），采用深色背景与克制的青色选中态，纯 GPUI-Kit 原生渲染，不嵌入网页视图（非官方实现）。
 - **界面图标**：统一使用 [Lucide](https://lucide.dev/) 线性图标，SVG 与上游许可（`assets/icons/LICENSE`）均通过 `include_bytes!` 嵌入可执行文件，完全离线且不依赖当前工作目录。
 - **项目标识**：采用极简几何的独立 OpenDolby 标识（[assets/opendolby.svg](assets/opendolby.svg) 与 [assets/opendolby.png](assets/opendolby.png)），桌面入口使用 `Icon=opendolby`，不使用杜比官方双 D 标识。
 - **功能边界**：仅展示实际可用的引擎控制项，不虚构未实现的均衡器、Atmos 解码或声学认证能力。

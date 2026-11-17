@@ -250,9 +250,6 @@ mod tests {
     use super::*;
     use std::f32::consts::PI;
 
-    const LOCAL_XML: &str =
-        "/home/waya/Downloads/dolby-research/payload/ext_asus/DEV_0294_SUBSYS_10431693_PCI_SUBSYS_16931043.xml";
-
     fn gen_sine(freq: f32, fs: f32, frames: usize, amp: f32) -> Vec<f32> {
         let mut out = Vec::with_capacity(frames * 2);
         for n in 0..frames {
@@ -270,7 +267,12 @@ mod tests {
 
     #[test]
     fn test_local_xml_and_dsp_hpf_and_bypass() {
-        let tuning = DeviceTuning::from_xml_file(LOCAL_XML).expect("parse local XML");
+        let xml_path = crate::default_xml_path();
+        if !xml_path.exists() {
+            eprintln!("skipping test_local_xml_and_dsp_hpf_and_bypass: {:?} not found", xml_path);
+            return;
+        }
+        let tuning = DeviceTuning::from_xml_file(&xml_path).expect("parse local XML");
 
         let mut proc_dyn =
             DolbyProcessor::from_tuning(&tuning, "dynamic", 48000).expect("dynamic profile");
