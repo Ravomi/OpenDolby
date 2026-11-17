@@ -6,6 +6,8 @@ mod instance;
 mod palette;
 #[path = "dolby_gui/view.rs"]
 mod view;
+#[path = "dolby_gui/view_pages.rs"]
+mod view_pages;
 
 use clap::Parser;
 use dolby_rs::audio_devices::{self, choose_internal_speaker, DeviceInventory, OutputDevice};
@@ -687,9 +689,30 @@ mod tests {
     #[test]
     fn target_is_safe_rejects_unavailable_headphones_and_virtual_outputs() {
         let outputs = vec![
-            device(1, "speaker.ok", true, true, false, DeviceKind::InternalSpeaker),
-            device(2, "speaker.unavail", true, false, false, DeviceKind::InternalSpeaker),
-            device(3, "headphones.ok", false, true, false, DeviceKind::Headphones),
+            device(
+                1,
+                "speaker.ok",
+                true,
+                true,
+                false,
+                DeviceKind::InternalSpeaker,
+            ),
+            device(
+                2,
+                "speaker.unavail",
+                true,
+                false,
+                false,
+                DeviceKind::InternalSpeaker,
+            ),
+            device(
+                3,
+                "headphones.ok",
+                false,
+                true,
+                false,
+                DeviceKind::Headphones,
+            ),
             device(4, VIRTUAL_SINK, true, true, true, DeviceKind::Virtual),
         ];
 
@@ -704,9 +727,30 @@ mod tests {
     #[test]
     fn restore_output_name_prefers_original_then_falls_back_to_target() {
         let outputs = vec![
-            device(1, "headphones.ok", false, true, false, DeviceKind::Headphones),
-            device(2, "speaker.ok", true, true, false, DeviceKind::InternalSpeaker),
-            device(3, "headphones.unavail", false, false, false, DeviceKind::Headphones),
+            device(
+                1,
+                "headphones.ok",
+                false,
+                true,
+                false,
+                DeviceKind::Headphones,
+            ),
+            device(
+                2,
+                "speaker.ok",
+                true,
+                true,
+                false,
+                DeviceKind::InternalSpeaker,
+            ),
+            device(
+                3,
+                "headphones.unavail",
+                false,
+                false,
+                false,
+                DeviceKind::Headphones,
+            ),
             device(4, VIRTUAL_SINK, false, true, true, DeviceKind::Virtual),
         ];
 

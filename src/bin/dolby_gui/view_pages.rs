@@ -1,4 +1,5 @@
 use super::{assets, palette::*, DolbyGui, VIRTUAL_SINK};
+use dolby_rs::audio_devices::DeviceKind;
 use gpui_kit::base::StyledExt;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
@@ -38,9 +39,9 @@ impl DolbyGui {
             .target_sink
             .as_deref()
             .map(|name| {
-                self.outputs
-                    .iter()
-                    .any(|d| d.name == name && d.available && d.is_internal_speaker && !d.is_virtual)
+                self.outputs.iter().any(|d| {
+                    d.name == name && d.available && d.is_internal_speaker && !d.is_virtual
+                })
             })
             .unwrap_or(false);
 
@@ -88,7 +89,9 @@ impl DolbyGui {
                                     .gap_3()
                                     .items_center()
                                     .child(div().font_semibold().child("当前处理目标"))
-                                    .child(div().text_color(rgb(TEXT)).truncate().child(target_label)),
+                                    .child(
+                                        div().text_color(rgb(TEXT)).truncate().child(target_label),
+                                    ),
                             )
                             .child(note(if running {
                                 if routed_to_virtual {
@@ -164,7 +167,7 @@ impl DolbyGui {
             v_flex()
                 .w_full()
                 .gap_3()
-                .child(div().font_semibold().child("可用音频设备"))
+                .child(div().font_semibold().child("设备列表"))
                 .children(if sorted_outputs.is_empty() {
                     vec![note("未发现音频输出设备。").into_any_element()]
                 } else {
@@ -173,18 +176,24 @@ impl DolbyGui {
                         .enumerate()
                         .map(|(idx, dev)| {
                             let is_target = self.target_sink.as_deref() == Some(dev.name.as_str());
-                            let is_default = self.default_sink.as_deref() == Some(dev.name.as_str());
-                            let kind_label = if dev.is_virtual {
-                                "虚拟输出"
-                            } else if dev.is_internal_speaker {
-                                "内置扬声器"
-                            } else {
-                                "外接 / 其他输出"
+                            let is_default =
+                                self.default_sink.as_deref() == Some(dev.name.as_str());
+                            let kind_label = match dev.kind {
+                                DeviceKind::InternalSpeaker => "内置扬声器",
+                                DeviceKind::Headphones => "耳机",
+                                DeviceKind::Hdmi => "HDMI / DisplayPort",
+                                DeviceKind::Bluetooth => "蓝牙",
+                                DeviceKind::Usb => "USB 音频",
+                                DeviceKind::Virtual => "虚拟输出",
+                                DeviceKind::Unknown => "其他输出",
                             };
                             let avail_label = if dev.available { "可用" } else { "不可用" };
 
-                            let can_set_target =
-                                !running && dev.available && dev.is_internal_speaker && !dev.is_virtual && !is_target;
+                            let can_set_target = !running
+                                && dev.available
+                                && dev.is_internal_speaker
+                                && !dev.is_virtual
+                                && !is_target;
                             let can_direct = dev.available && !dev.is_virtual && !is_default;
 
                             let name_for_target = dev.name.clone();
@@ -221,13 +230,14 @@ impl DolbyGui {
                                                             s.child(note("· 当前默认"))
                                                         }),
                                                 )
-                                                .child(note(format!("{kind_label} · {avail_label}"))),
+                                                .child(note(format!(
+                                                    "{kind_label} · {avail_label}"
+                                                ))),
                                         )
-                                        .child(
-                                            h_flex()
-                                                .gap_2()
-                                                .flex_shrink_0()
-                                                .when(!dev.is_virtual, |row| {
+                                        .child(h_flex().gap_2().flex_shrink_0().when(
+                                            !dev.is_virtual,
+                                            |row| {
+                                                row.when(dev.is_internal_speaker, |row| {
                                                     row.child(
                                                         Button::new(SharedString::from(format!(
                                                             "target-{idx}"
@@ -249,27 +259,26 @@ impl DolbyGui {
                                                             },
                                                         )),
                                                     )
-                                                    .child(
-                                                        Button::new(SharedString::from(format!(
-                                                            "direct-{idx}"
-                                                        )))
-                                                        .label(if is_default {
-                                                            "当前直连"
-                                                        } else {
-                                                            "直连物理设备"
-                                                        })
-                                                        .small()
-                                                        .outline()
-                                                        .disabled(!can_direct)
-                                                        .on_click(cx.listener(
-                                                            move |this, _, _, cx| {
-                                                                this.set_output(&name_for_direct);
-                                                                cx.notify();
-                                                            },
-                                                        )),
-                                                    )
-                                                }),
-                                        ),
+                                                })
+                                                .child(
+                                                    Button::new(SharedString::from(format!(
+                                                        "direct-{idx}"
+                                                    )))
+                                                    .label(if is_default {
+                                                        "当前直连"
+                                                    } else {
+                                                        "直连物理设备"
+                                                    })
+                                                    .small()
+                                                    .outline()
+                                                    .disabled(!can_direct)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.set_output(&name_for_direct);
+                                                        cx.notify();
+                                                    })),
+                                                )
+                                            },
+                                        )),
                                 )
                                 .child(rule())
                                 .into_any_element()
@@ -278,7 +287,10 @@ impl DolbyGui {
                 }),
         );
 
-        page.into_any_element()
+        page.child(note(
+            "仅对内置扬声器使用同机 OEM 调音文件。识别到设备不代表该机型已完成适配验证。",
+        ))
+        .into_any_element()
     }
 
     pub(super) fn render_about(&self) -> AnyElement {
