@@ -145,28 +145,11 @@ impl Drop for EngineHandle {
     }
 }
 
-/// Detect the hardware ALSA Speaker sink node.name so dolby_atmos_rust_out never loops back to itself.
+/// Detect the hardware internal speaker sink node.name so dolby_atmos_rust_out never loops back to itself.
 pub fn detect_hardware_speaker_sink() -> Option<String> {
-    let out = std::process::Command::new("pw-cli")
-        .args(["ls", "Node"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        if line.contains("node.name") && line.contains("Speaker__sink") {
-            let mut parts = line.split('"');
-            let _ = parts.next();
-            if let Some(name) = parts.next() {
-                if !name.is_empty() && name != VIRTUAL_SINK_NAME && name != VIRTUAL_OUT_NAME {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-    None
+    let inventory = crate::audio_devices::discover_outputs().ok()?;
+    crate::audio_devices::choose_internal_speaker(&inventory.outputs, None)
+        .map(|dev| dev.name.clone())
 }
 
 fn select_output_frames(requested: u64, max_frames: usize) -> usize {
@@ -298,7 +281,7 @@ fn run_pipewire_sink_inner(
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::MEDIA_CLASS => "Audio/Sink",
         *pw::keys::NODE_NAME => VIRTUAL_SINK_NAME,
-        *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust (ALC294)",
+        *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust",
         "application.name" => "OpenDolby",
         "application.icon-name" => "opendolby-app",
         "media.icon-name" => "opendolby-app",

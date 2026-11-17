@@ -1474,6 +1474,7 @@ dependencies = [
  "hound",
  "pipewire",
  "roxmltree 0.20.0",
+ "serde_json",
 ]
 
 [[package]]
