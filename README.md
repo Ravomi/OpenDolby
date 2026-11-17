@@ -1,54 +1,112 @@
-# OpenDolby / dolby-rs
+<div align="center">
+  <img src="assets/opendolby.png" alt="OpenDolby Logo" width="96" />
+  <h1>OpenDolby</h1>
+  <p>面向 Linux PipeWire 的实验性扬声器 DSP 引擎与 GPUI-Kit 原生控制面板</p>
+  <p>
+    <img src="https://img.shields.io/badge/Rust-2021-orange?style=flat-square&logo=rust" alt="Rust 2021" />
+    <img src="https://img.shields.io/badge/UI-GPUI--Kit%200.9-0ea5e9?style=flat-square" alt="GPUI-Kit 0.9" />
+    <img src="https://img.shields.io/badge/Audio-PipeWire-6366f1?style=flat-square" alt="PipeWire" />
+    <img src="https://img.shields.io/badge/Icons-Lucide%20(ISC%2FMIT)-64748b?style=flat-square" alt="Lucide Icons" />
+  </p>
+</div>
 
-Experimental Linux speaker DSP and GPUI-Kit control panel for this ASUS Zenbook's DAX3 tuning XML. **This is not a Dolby Atmos decoder, certified implementation, or a bit-exact port of the Windows APO.**
+> **实验性声明**：本项目基于本机硬件调音 XML 进行净室（Clean-room）工程实现，**不是**杜比官方软件、**不是** Dolby Atmos 解码器，也不保证与 Windows APO 逐比特一致。源码尚未指定开源协议，请勿将其视为官方或认证实现。
 
-## Run
+## 界面预览
+
+<div align="center">
+  <img src="docs/images/settings.png" alt="OpenDolby Settings" width="820" />
+</div>
+
+## 核心能力
+
+- **10 种引擎预设**：保留全部 10 个调音配置，支持实时切换与基准重置（Reset to baseline）。
+- **实时空间与对白调节**：提供 `Surround` 与 `Dialog` 平滑增益滑块（`0.0` ~ `2.0`，`1.0` 为当前预设近似基准；若 XML 禁用对应效果则滑块不会强行开启）。空间声场采用 M/S 展宽与延时交叉馈送，而非基于对象的 Atmos 渲染。
+- **电平匹配 A/B 对比（Processed / Bypass）**：通过同一虚拟 Sink 并行运行两条路径，切换时进行 20 ms 交叉淡变。默认开启近似电学 RMS 匹配（仅通过衰减对齐较安静的一侧，需 1–2 秒稳定；并非响度/LUFS 标准化）。
+- **Off 直通模式**：独立的纯平直通，不保留扬声器保护 DSP（笔记本扬声器请勿用于高音量低频测试）。
+- **输出设备路由**：在 **Output Devices / 输出设备** 页面选择虚拟输出，物理输出固定指向本机扬声器以避免自环；停止引擎时自动恢复默认扬声器。
+
+## 依赖与构建
+
+### 系统依赖
+
+- **Fedora**:
+  ```sh
+  sudo dnf install pipewire-devel clang pkg-config
+  ```
+- **Ubuntu / Debian**:
+  ```sh
+  sudo apt install libpipewire-0.3-dev clang pkg-config
+  ```
+
+### 编译与运行
 
 ```sh
 cargo build --release --bins
 ./target/release/dolby-gui
 ```
 
-The GUI starts with the engine stopped. Start it, then choose the virtual output. Its output is pinned to the physical Speaker to avoid a self-loop. Stopping restores Speaker if the app's virtual output is currently selected.
+启动 GUI 后引擎默认处于停止状态；点击启动后，前往 **Output Devices / 输出设备** 页面将系统输出切换至虚拟设备即可生效。
 
-- **Processed / Bypass**: A/B comparison through the same virtual sink. Both paths keep running. Switching crossfades over 20 ms.
-- **RMS matching** (on by default): matches the two paths to the quieter rolling stereo RMS by attenuation only. Let it settle for about 1-2 seconds after a major content/profile change. This is approximate electrical RMS matching, **not perceptual equal loudness or LUFS normalization**. Matched bypass can therefore be quieter than unity-gain raw input. Turn matching off for unaligned output, but start at a low system volume.
-- **Surround / Dialog**: live smoothed multipliers from 0 to 2, with 1 using the profile's approximation. Sliders never force an effect on if the XML disables it. Use Dynamic to audition these effects. The spatial stage is M/S widening and delayed crossfeed, not object-based Atmos rendering.
-- **Off profile**: exact flat passthrough, separate from matched A/B bypass. It does not retain speaker-protection DSP. Avoid loud sub-bass tests on laptop speakers.
+### 自定义调音 XML
 
-The default XML path is currently the local ASUS driver extraction in `src/lib.rs`. It is not bundled or licensed by this project. The CLI accepts `--xml PATH` before its subcommand.
+本项目**不捆绑、也不分发**任何 OEM 驱动或调音 XML 文件。
 
-## DSP changes and limits
+- **CLI**：支持在子命令前通过 `--xml PATH` 指定本机 XML 路径：
+  ```sh
+  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav wet.wav --profile dynamic
+  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav dry.wav --profile dynamic --bypass
+  ./target/release/dolby-rs --xml /path/to/tuning.xml process-wav input.wav unaligned.wav --profile dynamic --no-level-match
+  ```
+- **GUI**：当前默认读取 `src/lib.rs` 中的本机路径（后续将改为可发现的本地配置文件）。
 
-The old implementation cascaded each 20-band target directly as an overlapping peaking filter. The replacement fits the **combined** cascade response at the XML's actual nonuniform band centers. Prototype Q=4.3 is an engineering choice, not a recovered Dolby constant. The fit uses analytic RBJ biquad responses and control-thread-only iterations. Between-center behavior and phase are still approximations. IEQ remains a static target approximation, not the proprietary content-adaptive algorithm.
+## 常见音频恢复
 
-OEM PEQ/high-pass and the existing leveler/compressor remain. Compressor parameter semantics, crossover summation, and unused regulator fields have not been validated against a Windows APO capture. A generic output limiter is not proof of original OEM speaker protection. Do not call this a complete or acoustically verified OEM restoration.
+如果异常退出导致系统仍停留在虚拟输出设备，可任选以下方式恢复物理扬声器：
 
-Streaming callbacks are currently serialized on the PipeWire mainloop (no `RT_PROCESS`), with bounded stereo buffering and atomic live controls. This deliberately avoids the old cross-thread `Arc<RefCell<_>>` sharing but is **not a hard-real-time-certified engine**. Profile construction happens on the control thread and replacement on the mainloop timer. Changing profiles can reset DSP state; use the A/B toggle, not repeated profile changes, for quick comparisons.
+1. 重新打开 `dolby-gui` 并点击停止引擎（若当前选中虚拟输出，会自动切回物理扬声器）。
+2. 使用 PipeWire / WirePlumber 命令手动切回默认 Sink：
+   ```sh
+   wpctl status
+   wpctl set-default <物理扬声器 Sink ID>
+   ```
 
-## Reproducible checks
+## 界面与图标设计约定
+
+- **布局参考**：参考常见音频控制面板的层级结构（顶部导航 + 左侧聆听模式 + 右侧当前场景设置），采用深色背景与克制的青色选中态，纯 GPUI-Kit 原生渲染，不嵌入网页视图。
+- **界面图标**：统一使用 [Lucide](https://lucide.dev/) 线性图标，SVG 与上游许可（`assets/icons/LICENSE`）均通过 `include_bytes!` 嵌入可执行文件，完全离线且不依赖当前工作目录。
+- **项目标识**：采用极简几何的独立 OpenDolby 标识（[assets/opendolby.svg](assets/opendolby.svg) 与 [assets/opendolby.png](assets/opendolby.png)），桌面入口使用 `Icon=opendolby`，不使用杜比官方双 D 标识。
+- **功能边界**：仅展示实际可用的引擎控制项，不虚构未实现的均衡器、Atmos 解码或声学认证能力。
+
+## DSP 实现说明与可复现验证
+
+<details>
+<summary>DSP 拟合与线程模型说明（展开查看）</summary>
+
+- **20 段目标拟合**：不再将 20 段目标直接级联为重叠峰值滤波器，而是在 XML 实际非均匀频点处拟合**组合级联响应**（原型 `Q = 4.3` 为工程选择，非逆向还原的杜比常数）。采用解析 RBJ 二阶滤波器响应并在控制线程迭代，频点间行为与相位仍为近似。
+- **IEQ 与保护限制**：IEQ 仍为静态目标近似，而非内容自适应专有算法；OEM PEQ / 高通与现有电平/压缩器保留，但压缩器参数语义、分频叠加与未使用的调节器字段尚未对照 Windows APO 抓包验证。通用输出限幅器不能替代原厂声学保护。
+- **PipeWire 调度**：流回调当前在 PipeWire 主循环上串行执行（未使用 `RT_PROCESS`），配合有界立体声缓冲与原子实时控制，避免跨线程 `Arc<RefCell<_>>` 共享，但**并非硬实时认证引擎**。快速对比请使用 A/B 开关，避免频繁切换预设导致 DSP 状态重置。
+
+</details>
+
+<details>
+<summary>本地验证条件与实测数值（2026-11-18，ALC294 / 0x10431693）</summary>
 
 ```sh
 cargo test --all-targets
 python3 tools/measure_dsp.py --label after --check-matching
-# Stop the engine first. This uses only a temporary silent null sink:
+# 请先停止 GUI 引擎；仅使用临时静音 null sink：
 python3 tools/smoke_pipewire.py
 ```
 
-The Python measurement tool requires NumPy and SciPy and writes deterministic offline comparison WAVs/JSON under `target/dsp-check/`. It does not play audio. To export matched wet/dry versions of the same content:
+- `cargo test --all-targets`：14 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
+- **离线匹配测量**（`tools/measure_dsp.py`，需 NumPy / SciPy）：8 秒 48 kHz 立体声带限噪声（约 `-29.12 dBFS`）。旧版 Dynamic 输出比输入高 `+17.05 dB RMS`；开启匹配并稳定后，Dynamic / Music / Movie 湿声与旁路差值均小于 `0.001 dB`（仅代表特定信号的电学测量，不代表任意音乐的感知等响度）。
+- **PipeWire 冒烟测试**（`tools/smoke_pipewire.py`）：在临时静音 null sink 捕获 `240000` 帧 48 kHz 立体声，单声道 RMS 约 `0.00360`，输出有限且 1–4 秒区间无 100 ms 静音块；默认硬件扬声器未受影响，未播放测试音。已安装的 PipeWire `1.6.11` 中 `pw-record` 在达到采样数上限时可能返回 `1`，测试脚本仅在错误日志为空且帧数精确匹配时放行并校验样本与路由。
 
-```sh
-./target/release/dolby-rs process-wav input.wav wet.wav --profile dynamic
-./target/release/dolby-rs process-wav input.wav dry.wav --profile dynamic --bypass
-# Disable alignment explicitly for an unaligned reference:
-./target/release/dolby-rs process-wav input.wav unaligned.wav --profile dynamic --no-level-match
-```
+</details>
 
-### Local validation (2026-11-18, ALC294 / 0x10431693)
+## 许可与致谢
 
-- `cargo test --all-targets`: 14 tests passed, including variable block sizes, live invalid-value handling, exact Off passthrough and matched A/B.
-- Deterministic 8-second, 48 kHz stereo band-limited noise at approximately -29.12 dBFS: the old Dynamic output was +17.05 dB RMS above input. With matching enabled, settled Dynamic/Music/Movie wet-versus-bypass differences were all below 0.001 dB. This is a signal-specific electrical measurement, not proof of perceptual equality on arbitrary music.
-- Temporary silent PipeWire null-sink test: 240000 captured stereo frames at 48 kHz, RMS about 0.00360 per channel, finite output and no silent 100 ms blocks in the measured 1-4 second interval. Default hardware Speaker remained unchanged. No speaker test tone was played.
-- The installed PipeWire 1.6.11 `pw-record` returns 1 when its sample-count limit ends recording without setting `data.drained`. The smoke test accepts that case only with an empty error log and exactly the requested frame count, then checks the actual samples and routing.
-
-Sources used for the implementation: W3C Audio EQ Cookbook (Robert Bristow-Johnson), the installed GPUI-Kit Slider/SliderState API, and the installed PipeWire stream/buffer API. These specify filter/control mechanisms, not Dolby's proprietary algorithms.
+- **项目源码**：当前仓库未指定开源许可证。
+- **第三方图标**：捆绑的 Lucide SVG 图标依据 ISC / MIT 协议使用，完整许可文本见 [assets/icons/LICENSE](assets/icons/LICENSE)。
+- **参考资料**：W3C Audio EQ Cookbook (Robert Bristow-Johnson)、GPUI-Kit `Slider`/`SliderState` API、PipeWire 流与缓冲 API。
