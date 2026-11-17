@@ -104,6 +104,20 @@ def main():
                  "virtual sink removal")
         assert run("pactl", "get-default-sink") != "dolby_atmos_rust", "Stop did not restore hardware"
         report["explicit_stop_restores_hardware"] = True
+
+        run(binary, "--start")
+        wait_for(lambda: status().get("running"), "engine restart for user-default check")
+        wait_for(lambda: "dolby_atmos_rust" in run("pactl", "list", "short", "sinks"),
+                 "virtual sink for user-default check")
+        run("pactl", "set-default-sink", "dolby_atmos_rust")
+        run("pactl", "set-default-sink", original_default)
+        run(binary, "--stop")
+        wait_for(lambda: not status().get("running"), "stop after user default change")
+        wait_for(lambda: "dolby_atmos_rust" not in run("pactl", "list", "short", "sinks"),
+                 "virtual sink removal after user default change")
+        assert run("pactl", "get-default-sink") == original_default, "Stop overwrote user-selected default sink"
+        report["stop_preserves_user_default_sink"] = True
+
         close_panel(pid)
         child.wait(timeout=10)
         assert not status().get("pid"), "Closing a stopped panel must exit"
