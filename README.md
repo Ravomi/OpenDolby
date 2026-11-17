@@ -50,6 +50,16 @@ cargo build --release --locked --bins
 
 启动 GUI 后引擎默认处于停止状态；点击启动后，前往 **Output Devices / 输出设备** 页面将系统输出切换至虚拟设备即可生效。
 
+### 可选：安装桌面入口
+
+```sh
+install -Dm755 target/release/dolby-gui "$HOME/.local/bin/dolby-gui"
+install -Dm644 assets/dolby-gui.desktop "$HOME/.local/share/applications/dolby-gui.desktop"
+install -Dm644 assets/opendolby-app.svg "$HOME/.local/share/icons/hicolor/scalable/apps/opendolby-app.svg"
+```
+
+请确保 `$HOME/.local/bin` 在 `PATH` 中。桌面启动器与音量面板共用同一个图标名，应用内使用保留相同比例和留白的透明标识。
+
 ### 自定义调音 XML
 
 本项目**不捆绑、也不分发**任何 OEM 驱动或调音 XML 文件。GUI 与 CLI 共用统一的配置发现顺序：
@@ -83,7 +93,7 @@ cargo build --release --locked --bins
 
 - **布局参考**：参考 Dolby Access 设置页的层级结构（顶部导航 + 左侧聆听模式 + 右侧当前场景设置），采用深色背景与克制的青色选中态，纯 GPUI-Kit 原生渲染，不嵌入网页视图（非官方实现）。
 - **界面图标**：统一使用 [Lucide](https://lucide.dev/) 线性图标，SVG 与上游许可（`assets/icons/LICENSE`）均通过 `include_bytes!` 嵌入可执行文件，完全离线且不依赖当前工作目录。
-- **项目标识**：采用极简几何的独立 OpenDolby 标识（[assets/opendolby.svg](assets/opendolby.svg) 与 [assets/opendolby.png](assets/opendolby.png)），桌面入口使用 `Icon=opendolby`，不使用杜比官方双 D 标识。
+- **项目标识**：采用极简几何的独立 OpenDolby 标识（[assets/opendolby.svg](assets/opendolby.svg) 与 [assets/opendolby.png](assets/opendolby.png)），桌面入口与 PipeWire 音频流统一使用 `opendolby-app` 图标名（方形图标见 [assets/opendolby-app.svg](assets/opendolby-app.svg)），不使用杜比官方双 D 标识。
 - **功能边界**：仅展示实际可用的引擎控制项，不虚构未实现的均衡器、Atmos 解码或声学认证能力。
 
 ## DSP 实现说明与可复现验证
@@ -107,7 +117,7 @@ python3 tools/measure_dsp.py --label after --check-matching
 python3 tools/smoke_pipewire.py
 ```
 
-- `cargo test --all-targets`：14 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
+- `cargo test --all-targets`：16 项测试通过（含变长块大小、实时非法值处理、Off 精确直通与匹配 A/B）。
 - **离线匹配测量**（`tools/measure_dsp.py`，需 NumPy / SciPy）：8 秒 48 kHz 立体声带限噪声（约 `-29.12 dBFS`）。旧版 Dynamic 输出比输入高 `+17.05 dB RMS`；开启匹配并稳定后，Dynamic / Music / Movie 湿声与旁路差值均小于 `0.001 dB`（仅代表特定信号的电学测量，不代表任意音乐的感知等响度）。
 - **PipeWire 冒烟测试**（`tools/smoke_pipewire.py`）：在临时静音 null sink 捕获 `240000` 帧 48 kHz 立体声，单声道 RMS 约 `0.00360`，输出有限且 1–4 秒区间无 100 ms 静音块；默认硬件扬声器未受影响，未播放测试音。已安装的 PipeWire `1.6.11` 中 `pw-record` 在达到采样数上限时可能返回 `1`，测试脚本仅在错误日志为空且帧数精确匹配时放行并校验样本与路由。
 

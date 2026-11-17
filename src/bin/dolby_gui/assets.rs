@@ -1,26 +1,60 @@
 use std::borrow::Cow;
 
-use gpui_kit::{AssetSource, Result, SharedString, Svg, svg};
+use gpui_kit::{svg, AssetSource, Result, SharedString, Svg};
 
 const OPENDOLBY_SVG: &[u8] = include_bytes!("../../../assets/opendolby.svg");
 
 const LUCIDE_ICONS: &[(&str, &[u8])] = &[
-    ("arrow-right", include_bytes!("../../../assets/icons/arrow-right.svg")),
-    ("audio-lines", include_bytes!("../../../assets/icons/audio-lines.svg")),
+    (
+        "arrow-right",
+        include_bytes!("../../../assets/icons/arrow-right.svg"),
+    ),
+    (
+        "audio-lines",
+        include_bytes!("../../../assets/icons/audio-lines.svg"),
+    ),
     ("check", include_bytes!("../../../assets/icons/check.svg")),
-    ("clapperboard", include_bytes!("../../../assets/icons/clapperboard.svg")),
-    ("gamepad-2", include_bytes!("../../../assets/icons/gamepad-2.svg")),
-    ("headphones", include_bytes!("../../../assets/icons/headphones.svg")),
+    (
+        "clapperboard",
+        include_bytes!("../../../assets/icons/clapperboard.svg"),
+    ),
+    (
+        "gamepad-2",
+        include_bytes!("../../../assets/icons/gamepad-2.svg"),
+    ),
+    (
+        "headphones",
+        include_bytes!("../../../assets/icons/headphones.svg"),
+    ),
     ("house", include_bytes!("../../../assets/icons/house.svg")),
     ("info", include_bytes!("../../../assets/icons/info.svg")),
     ("mic", include_bytes!("../../../assets/icons/mic.svg")),
+    ("music", include_bytes!("../../../assets/icons/music.svg")),
     ("power", include_bytes!("../../../assets/icons/power.svg")),
-    ("rotate-ccw", include_bytes!("../../../assets/icons/rotate-ccw.svg")),
-    ("settings-2", include_bytes!("../../../assets/icons/settings-2.svg")),
-    ("sliders-horizontal", include_bytes!("../../../assets/icons/sliders-horizontal.svg")),
-    ("sparkles", include_bytes!("../../../assets/icons/sparkles.svg")),
-    ("speaker", include_bytes!("../../../assets/icons/speaker.svg")),
-    ("volume-2", include_bytes!("../../../assets/icons/volume-2.svg")),
+    (
+        "rotate-ccw",
+        include_bytes!("../../../assets/icons/rotate-ccw.svg"),
+    ),
+    (
+        "settings-2",
+        include_bytes!("../../../assets/icons/settings-2.svg"),
+    ),
+    (
+        "sliders-horizontal",
+        include_bytes!("../../../assets/icons/sliders-horizontal.svg"),
+    ),
+    (
+        "sparkles",
+        include_bytes!("../../../assets/icons/sparkles.svg"),
+    ),
+    (
+        "speaker",
+        include_bytes!("../../../assets/icons/speaker.svg"),
+    ),
+    (
+        "volume-2",
+        include_bytes!("../../../assets/icons/volume-2.svg"),
+    ),
 ];
 
 /// Embedded GPUI asset source combining OpenDolby's bundled Lucide icons and app mark
@@ -49,8 +83,7 @@ impl AssetSource for AppAssets {
 }
 
 fn normalize_icon_name(name: &str) -> &str {
-    name.trim_start_matches("icons/")
-        .trim_end_matches(".svg")
+    name.trim_start_matches("icons/").trim_end_matches(".svg")
 }
 
 fn lookup_embedded(path: &str) -> Option<&'static [u8]> {
@@ -95,6 +128,8 @@ mod tests {
         let assets = application_assets();
         assert!(assets.load("icons/house.svg").unwrap().is_some());
         assert!(assets.load("opendolby.svg").unwrap().is_some());
-        assert!(assets.load("icons/nonexistent-icon.svg").unwrap().is_none());
+        // The upstream fallback reports missing assets as an error, not Ok(None).
+        assert!(lookup_embedded("icons/nonexistent-icon.svg").is_none());
+        assert!(assets.load("icons/nonexistent-icon.svg").is_err());
     }
 }

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenDolby
+Comment=Native control panel for experimental PipeWire speaker DSP
+Exec=dolby-gui
+Icon=opendolby-app
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=dolby;pipewire;audio;dsp;
+StartupWMClass=dolby-gui

@@ -1,2 +1,9 @@
 /target
 *.wav
+
+# Local configuration and proprietary driver payloads must stay outside Git.
+/tuning.xml
+/local/
+/drivers/
+.env
+.env.*

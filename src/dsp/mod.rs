@@ -269,7 +269,10 @@ mod tests {
     fn test_local_xml_and_dsp_hpf_and_bypass() {
         let xml_path = crate::default_xml_path();
         if !xml_path.exists() {
-            eprintln!("skipping test_local_xml_and_dsp_hpf_and_bypass: {:?} not found", xml_path);
+            eprintln!(
+                "skipping test_local_xml_and_dsp_hpf_and_bypass: {:?} not found",
+                xml_path
+            );
             return;
         }
         let tuning = DeviceTuning::from_xml_file(&xml_path).expect("parse local XML");
