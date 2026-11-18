@@ -1,5 +1,7 @@
 # OpenDolby
 
+[English](README.md) | [简体中文](#简体中文)
+
 Open-source Dolby DAX3 speaker tuning parser and PipeWire `filter-chain` generator for Linux.
 
 > **Not a generic EQ preset.** OpenDolby directly restores the OEM's speaker-specific DAX3 tuning (crossovers, biquads, and multiband curves) from Windows driver XMLs and runs it natively on PipeWire with zero-latency minimum-phase FIR convolution.
@@ -46,3 +48,29 @@ python3 -m opendolby.cli uninstall
 3. **Generates PipeWire `filter-chain` (`opendolby/pipewire.py`)**: Emits a zero-latency `builtin` convolver + optional `lsp-plugins` LV2 brickwall limiter (`limiter_stereo`) targeting the hardware speaker sink.
 
 See [docs/architecture.md](docs/architecture.md) for the DAX3-to-Linux DSP mapping details.
+
+---
+
+## 简体中文
+
+开源的 Linux Dolby DAX3 扬声器调音解析器与 PipeWire `filter-chain` 生成器。
+
+> **并非通用 EQ 预设。** OpenDolby 直接从 Windows 驱动 XML 中还原厂商针对扬声器腔体设计的 DAX3 调音（分频、双二阶滤波器、多段曲线），并通过 PipeWire 原生零延迟最小相位 FIR 卷积运行。
+
+### 快速开始
+
+```bash
+# 使用 uv 直接运行（无需手动配置 venv 或 cargo）
+git clone https://github.com/Ravomi/OpenDolby.git && cd OpenDolby
+uv run python -m opendolby.cli install music
+
+# 或通过 uv tool 全局安装
+uv tool install .
+opendolby install music
+```
+
+随时卸载并恢复默认扬声器输出：
+
+```bash
+uv run python -m opendolby.cli uninstall
+```
