@@ -1,4 +1,7 @@
-# OpenDolby
+<div align="center">
+  <img src="docs/images/readme-hero.png" alt="OpenDolby · Linux / PipeWire / Native DSP" width="960" />
+  <h1>OpenDolby</h1>
+</div>
 
 [English](README.md) | [简体中文](#简体中文)
 
