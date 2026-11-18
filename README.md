@@ -1,79 +1,95 @@
 <div align="center">
   <img src="docs/images/readme-hero.png" alt="OpenDolby · Linux / PipeWire / Native DSP" width="960" />
   <h1>OpenDolby</h1>
+  <p><strong>Bring OEM speaker tuning back to Linux.</strong><br/>Open-source Dolby DAX3 tuning parser &amp; zero-latency PipeWire <code>filter-chain</code> generator.</p>
+  <p>
+    <a href="https://github.com/Ravomi/OpenDolby/actions/workflows/ci.yml"><img src="https://github.com/Ravomi/OpenDolby/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+    <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License" />
+    <img src="https://img.shields.io/badge/python-3.11%2B-3776ab.svg" alt="Python 3.11+" />
+    <img src="https://img.shields.io/badge/audio-PipeWire-7c3aed.svg" alt="PipeWire" />
+  </p>
+  <p><a href="#opendolby">English</a> · <a href="#简体中文">简体中文</a></p>
 </div>
 
-[English](README.md) | [简体中文](#简体中文)
+---
 
-Open-source Dolby DAX3 speaker tuning parser and PipeWire `filter-chain` generator for Linux.
+> [!WARNING]
+> **Experimental / Clean-Room Notice**: OpenDolby is an independent clean-room implementation based on OEM tuning XMLs. It is **not** official Dolby software or a Dolby Atmos decoder.
 
-> **Not a generic EQ preset.** OpenDolby directly restores the OEM's speaker-specific DAX3 tuning (crossovers, biquads, and multiband curves) from Windows driver XMLs and runs it natively on PipeWire with zero-latency minimum-phase FIR convolution.
+## Why OpenDolby?
 
-![OpenDolby Synthesized Frequency Response](docs/frequency-response.png)
+Laptop speakers on Linux often sound flat or tinny compared to Windows because the manufacturer's Dolby DAX3 / APO speaker tuning is not applied.
 
-Built and verified on **ASUS Zenbook UX3404VC** (`Realtek ALC294`, `VEN_10EC&DEV_0294&SUBSYS_10431693`) using the official DAX3 XML tuning extracted from ASUS `DolbyAPOdriver` (`DEV_0294_SUBSYS_10431693_PCI_SUBSYS_16931043.xml`).
+- **Not a generic EQ preset**: Directly parses the OEM's speaker-specific DAX3 XML (crossovers, biquads, and multiband curves).
+- **Zero-latency PipeWire native**: Synthesizes causal minimum-phase FIR impulse responses (`.irs`) and runs natively in PipeWire `filter-chain` with optional `lsp-plugins` LV2 brickwall limiting.
+- **Easy to try & revert**: One command to install, switch profiles, check status, or cleanly uninstall.
+
+## Frequency Response & UI Preview
+
+<div align="center">
+  <img src="docs/frequency-response.png" alt="OpenDolby Synthesized Minimum-Phase FIR Frequency Response" width="840" />
+</div>
+
+<div align="center">
+  <img src="docs/images/settings.png" alt="OpenDolby Light Settings" width="410" />
+  <img src="docs/images/sound-dark.png" alt="OpenDolby Dark Sound Panel" width="410" />
+</div>
 
 ## Quickstart
+
+Built and verified on **ASUS Zenbook UX3404VC** (`Realtek ALC294`, `VEN_10EC&DEV_0294&SUBSYS_10431693`).
 
 ```bash
 # Run directly with uv (no manual venv or cargo needed)
 git clone https://github.com/Ravomi/OpenDolby.git && cd OpenDolby
 uv run python -m opendolby.cli install music
 
-# Or install CLI globally via pipx / uv tool
-uv tool install .
-opendolby install music
-```
+# Switch profiles (movie / dynamic / game / voice)
+uv run python -m opendolby.cli install movie
 
-To revert at any time and restore plain speaker output:
+# Check active installation
+uv run python -m opendolby.cli status
 
-```bash
+# Uninstall and restore plain speaker output
 uv run python -m opendolby.cli uninstall
 ```
 
-### Install / Switch / Uninstall on PipeWire
+### Use Your Own Laptop's DAX3 XML
+
+Extract the DAX3 `.xml` from your Windows partition (`C:\Windows\System32\drivers\`) or OEM audio driver package, then pass `--xml`:
 
 ```bash
-# Install the 'music' profile and restart PipeWire
-python3 -m opendolby.cli install music
-
-# Switch to 'movie' or 'dynamic'
-python3 -m opendolby.cli install movie
-
-# Remove all OpenDolby PipeWire configs and restore plain Speaker output
-python3 -m opendolby.cli uninstall
+uv run python -m opendolby.cli inspect --xml /path/to/your_dax3.xml
+uv run python -m opendolby.cli install music --xml /path/to/your_dax3.xml
 ```
 
-## What It Does
+## How It Works
 
-1. **Parses DAX3 XML (`opendolby/parser.py`)**: Reads `tuning-cp` (IEQ, GEQ, Audio/Process Optimizer, gains) and `tuning-vlldp` (speaker 20-band optimizer, `speaker-peq-filters` biquads/Butterworth crossovers, multiband compressor, regulator thresholds, peak ceiling).
-2. **Synthesizes Minimum-Phase FIR (`opendolby/dsp.py`)**: Combines active frequency-domain curves and biquad responses on a dense FFT grid, converts to a causal minimum-phase impulse response (`.irs` stereo float32 WAV) via real cepstrum, and trims headroom safely below `0 dBFS`.
-3. **Generates PipeWire `filter-chain` (`opendolby/pipewire.py`)**: Emits a zero-latency `builtin` convolver + optional `lsp-plugins` LV2 brickwall limiter (`limiter_stereo`) targeting the hardware speaker sink.
+1. **Parse DAX3 XML (`opendolby/parser.py`)**: Extracts `tuning-cp` (IEQ, GEQ, Optimizer) and `tuning-vlldp` (20-band speaker optimizer, `speaker-peq-filters` biquads/crossovers, multiband compressor, peak ceiling).
+2. **Synthesize Minimum-Phase FIR (`opendolby/dsp.py`)**: Combines active curves on a dense FFT grid, converts to a causal minimum-phase `.irs` (float32 stereo WAV) via real cepstrum, and trims headroom safely below `0 dBFS`.
+3. **Generate PipeWire `filter-chain` (`opendolby/pipewire.py`)**: Emits a zero-latency `builtin` convolver + optional `lsp-plugins` LV2 `limiter_stereo` targeting your hardware speaker sink.
 
-See [docs/architecture.md](docs/architecture.md) for the DAX3-to-Linux DSP mapping details.
+See [docs/architecture.md](docs/architecture.md) for full DSP mapping details.
+
+## License
+
+Dual-licensed under **MIT OR Apache-2.0**.
 
 ---
 
 ## 简体中文
 
-开源的 Linux Dolby DAX3 扬声器调音解析器与 PipeWire `filter-chain` 生成器。
+<p><strong>把本机扬声器调音带回 Linux。</strong>开源的 Dolby DAX3 调音解析器与零延迟 PipeWire <code>filter-chain</code> 生成器。</p>
 
-> **并非通用 EQ 预设。** OpenDolby 直接从 Windows 驱动 XML 中还原厂商针对扬声器腔体设计的 DAX3 调音（分频、双二阶滤波器、多段曲线），并通过 PipeWire 原生零延迟最小相位 FIR 卷积运行。
+- **并非通用 EQ 预设**：直接解析 Windows 驱动 XML 中的厂商扬声器专属调音（分频、双二阶滤波器、多段曲线）。
+- **PipeWire 原生零延迟**：通过实倒谱合成因果最小相位 FIR 脉冲响应（`.irs`），并可选搭配 `lsp-plugins` LV2 限幅器。
+- **支持自定义机型**：默认内置华硕 Zenbook UX3404VC 配置，也支持 `--xml <path>` 导入其他笔记本的 DAX3 XML。
 
 ### 快速开始
 
 ```bash
-# 使用 uv 直接运行（无需手动配置 venv 或 cargo）
 git clone https://github.com/Ravomi/OpenDolby.git && cd OpenDolby
-uv run python -m opendolby.cli install music
-
-# 或通过 uv tool 全局安装
-uv tool install .
-opendolby install music
-```
-
-随时卸载并恢复默认扬声器输出：
-
-```bash
-uv run python -m opendolby.cli uninstall
+uv run python -m opendolby.cli install music   # 安装 music 配置
+uv run python -m opendolby.cli status          # 查看当前状态
+uv run python -m opendolby.cli uninstall       # 卸载并恢复默认输出
 ```
