@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 from scipy.io import wavfile
 
+from opendolby.cli import main as cli_main
 from opendolby.dsp import synthesize_profile_irs
 from opendolby.parser import parse_dax3_xml
 from opendolby.pipewire import render_filter_chain_conf
@@ -55,6 +56,22 @@ class TestOpenDolby(unittest.TestCase):
             self.assertIn(str(irs_path.resolve()), conf)
             self.assertIn("limiter_stereo", conf)
             self.assertIn("alsa_output.test.Speaker__sink", conf)
+
+    def test_cli_build_status_uninstall_and_invalid_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "dist"
+            self.assertEqual(cli_main(["inspect", "--xml", str(XML_PATH)]), 0)
+            self.assertEqual(
+                cli_main(["build", "music", "--xml", str(XML_PATH), "--out-dir", str(out_dir), "--target-sink", "test.sink"]),
+                0,
+            )
+            self.assertTrue((out_dir / "opendolby-music.irs").exists())
+            self.assertTrue((out_dir / "opendolby-music.conf").exists())
+            self.assertEqual(cli_main(["status", "--conf-dir", str(out_dir)]), 0)
+            self.assertEqual(cli_main(["uninstall", "--conf-dir", str(out_dir), "--no-restart"]), 0)
+            self.assertFalse((out_dir / "opendolby-music.conf").exists())
+            with self.assertRaises(SystemExit):
+                cli_main(["build", "nonexistent_profile", "--xml", str(XML_PATH), "--out-dir", str(out_dir)])
 
 
 if __name__ == "__main__":
