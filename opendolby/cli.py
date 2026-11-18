@@ -43,6 +43,9 @@ def _cmd_build(args: argparse.Namespace) -> None:
     profiles = list(dev.profiles) if args.profile == "all" else [args.profile]
 
     for prof in profiles:
+        if prof not in dev.profiles:
+            available = ", ".join(dev.profiles)
+            raise SystemExit(f"Error: unknown profile '{prof}'. Available: {available}")
         irs_path = out_dir / f"{CONF_PREFIX}{prof}.irs"
         conf_path = out_dir / f"{CONF_PREFIX}{prof}.conf"
         summary = synthesize_profile_irs(dev, prof, irs_path, num_taps=args.taps)
@@ -62,6 +65,9 @@ def _cmd_build(args: argparse.Namespace) -> None:
 
 def _cmd_install(args: argparse.Namespace) -> None:
     dev = parse_dax3_xml(args.xml)
+    if args.profile not in dev.profiles:
+        available = ", ".join(dev.profiles)
+        raise SystemExit(f"Error: unknown profile '{args.profile}'. Available: {available}")
     conf_dir = Path(args.conf_dir)
     conf_dir.mkdir(parents=True, exist_ok=True)
     uninstall_profiles(conf_dir)
@@ -96,6 +102,16 @@ def _cmd_uninstall(args: argparse.Namespace) -> None:
         print("No OpenDolby PipeWire configs found.")
 
 
+def _cmd_status(args: argparse.Namespace) -> None:
+    conf_dir = Path(args.conf_dir)
+    confs = sorted(conf_dir.glob(f"{CONF_PREFIX}*.conf")) if conf_dir.exists() else []
+    if not confs:
+        print(f"Status: not installed (no {CONF_PREFIX}*.conf in {conf_dir})")
+        return
+    for c in confs:
+        print(f"Installed: {c}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the CLI argument parser."""
     parser = argparse.ArgumentParser(prog="opendolby", description="OpenDolby DAX3 to PipeWire tool")
@@ -128,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_uninst.add_argument("--conf-dir", default=str(DEFAULT_CONF_DIR), help="PipeWire conf.d path")
     p_uninst.add_argument("--no-restart", action="store_true", help="Skip restarting PipeWire")
     p_uninst.set_defaults(func=_cmd_uninstall)
+
+    p_status = sub.add_parser("status", help="Show installed OpenDolby PipeWire configs")
+    p_status.add_argument("--conf-dir", default=str(DEFAULT_CONF_DIR), help="PipeWire conf.d path")
+    p_status.set_defaults(func=_cmd_status)
 
     return parser
 
