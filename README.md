@@ -2,14 +2,28 @@
 
 Open-source Dolby DAX3 speaker tuning parser and PipeWire `filter-chain` generator for Linux.
 
+> **Not a generic EQ preset.** OpenDolby directly restores the OEM's speaker-specific DAX3 tuning (crossovers, biquads, and multiband curves) from Windows driver XMLs and runs it natively on PipeWire with zero-latency minimum-phase FIR convolution.
+
+![OpenDolby Synthesized Frequency Response](docs/frequency-response.png)
+
 Built and verified on **ASUS Zenbook UX3404VC** (`Realtek ALC294`, `VEN_10EC&DEV_0294&SUBSYS_10431693`) using the official DAX3 XML tuning extracted from ASUS `DolbyAPOdriver` (`DEV_0294_SUBSYS_10431693_PCI_SUBSYS_16931043.xml`).
 
 ## Quickstart
 
 ```bash
-cd /home/waya/Projects/OpenDolby
-python3 -m opendolby.cli inspect
-python3 -m opendolby.cli build all
+# Run directly with uv (no manual venv or cargo needed)
+git clone https://github.com/1jehuang/OpenDolby.git && cd OpenDolby
+uv run python -m opendolby.cli install music
+
+# Or install CLI globally via pipx / uv tool
+uv tool install .
+opendolby install music
+```
+
+To revert at any time and restore plain speaker output:
+
+```bash
+uv run python -m opendolby.cli uninstall
 ```
 
 ### Install / Switch / Uninstall on PipeWire
