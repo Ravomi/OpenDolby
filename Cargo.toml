@@ -1,0 +1,28 @@
+[package]
+name = "dolby-rs"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Ravomi/OpenDolby"
+readme = "README.md"
+description = "Experimental clean-room Linux PipeWire speaker DSP and GPUI-Kit control panel"
+keywords = ["audio", "dsp", "pipewire", "linux", "gpui"]
+categories = ["multimedia::audio", "gui"]
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+clap = { version = "4", features = ["derive"] }
+gpui-kit = "0.9.0"
+hound = "3.5"
+pipewire = { version = "0.9", features = ["v0_3_49"] }
+roxmltree = "0.20"
+serde_json = "1"
+
+[[bin]]
+name = "dolby-rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "dolby-gui"
+path = "src/bin/dolby_gui.rs"
