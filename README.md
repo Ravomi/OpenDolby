@@ -12,7 +12,7 @@ Built and verified on **ASUS Zenbook UX3404VC** (`Realtek ALC294`, `VEN_10EC&DEV
 
 ```bash
 # Run directly with uv (no manual venv or cargo needed)
-git clone https://github.com/1jehuang/OpenDolby.git && cd OpenDolby
+git clone https://github.com/Ravomi/OpenDolby.git && cd OpenDolby
 uv run python -m opendolby.cli install music
 
 # Or install CLI globally via pipx / uv tool
