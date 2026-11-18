@@ -17,33 +17,6 @@ pub(super) struct Profile {
     description: &'static str,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{assets, profile, PROFILES};
-    use gpui_kit::AssetSource;
-
-    #[test]
-    fn profiles_have_unique_real_engine_ids_and_clear_fallback() {
-        let app_assets = assets::application_assets();
-        let mut ids = std::collections::HashSet::new();
-        for profile in PROFILES {
-            assert!(ids.insert(profile.id));
-            assert!(!profile.title.is_empty());
-            assert!(!profile.description.is_empty());
-            let icon_path = format!("icons/{}.svg", profile.icon);
-            assert!(
-                app_assets.load(&icon_path).unwrap().is_some(),
-                "missing icon asset for profile {}: {}",
-                profile.id,
-                icon_path
-            );
-        }
-        assert_eq!(PROFILES.len(), 9);
-        assert!(!PROFILES.iter().any(|p| p.id == "voice_onlinecourse"));
-        assert_eq!(profile("music").title, "音乐");
-        assert_eq!(profile("missing").id, "dynamic");
-    }
-}
 const PROFILES: &[Profile] = &[
     Profile {
         id: "dynamic",
@@ -679,5 +652,33 @@ impl DolbyGui {
                     .child(note(label, colors))
             }))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{assets, profile, PROFILES};
+    use gpui_kit::AssetSource;
+
+    #[test]
+    fn profiles_have_unique_real_engine_ids_and_clear_fallback() {
+        let app_assets = assets::application_assets();
+        let mut ids = std::collections::HashSet::new();
+        for profile in PROFILES {
+            assert!(ids.insert(profile.id));
+            assert!(!profile.title.is_empty());
+            assert!(!profile.description.is_empty());
+            let icon_path = format!("icons/{}.svg", profile.icon);
+            assert!(
+                app_assets.load(&icon_path).unwrap().is_some(),
+                "missing icon asset for profile {}: {}",
+                profile.id,
+                icon_path
+            );
+        }
+        assert_eq!(PROFILES.len(), 9);
+        assert!(!PROFILES.iter().any(|p| p.id == "voice_onlinecourse"));
+        assert_eq!(profile("music").title, "音乐");
+        assert_eq!(profile("missing").id, "dynamic");
     }
 }

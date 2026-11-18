@@ -2,8 +2,10 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::process::Command;
 
-pub const VIRTUAL_SINK_NAME: &str = "dolby_atmos_rust";
-pub const VIRTUAL_OUT_NAME: &str = "dolby_atmos_rust_out";
+pub const VIRTUAL_SINK_NAME: &str = "opendolby_speaker";
+pub const VIRTUAL_OUT_NAME: &str = "opendolby_speaker_out";
+const LEGACY_VIRTUAL_SINK_NAME: &str = "dolby_atmos_rust";
+const LEGACY_VIRTUAL_OUT_NAME: &str = "dolby_atmos_rust_out";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceKind {
@@ -35,6 +37,7 @@ pub struct OutputDevice {
     pub id: u32,
     pub name: String,
     pub description: String,
+    pub sample_rate: u32,
     pub is_virtual: bool,
     pub is_internal_speaker: bool,
     pub available: bool,
@@ -190,6 +193,7 @@ fn parse_single_sink(item: &Value) -> Option<OutputDevice> {
     });
 
     let available = compute_availability(active_port_obj, ports);
+    let sample_rate = parse_sample_rate(item);
     let is_virtual = detect_virtual(&name, prop_str);
     let kind = classify_device_kind(
         &name,
@@ -204,11 +208,27 @@ fn parse_single_sink(item: &Value) -> Option<OutputDevice> {
         id,
         name,
         description,
+        sample_rate,
         is_virtual,
         is_internal_speaker,
         available,
         kind,
     })
+}
+
+fn parse_sample_rate(item: &Value) -> u32 {
+    item.get("sample_specification")
+        .and_then(|v| v.as_str())
+        .and_then(|spec| {
+            spec.split_whitespace().find_map(|token| {
+                token
+                    .strip_suffix("Hz")
+                    .or_else(|| token.strip_suffix("hz"))
+                    .and_then(|num| num.parse::<u32>().ok())
+            })
+        })
+        .filter(|&r| (8_000..=384_000).contains(&r))
+        .unwrap_or(48_000)
 }
 
 fn compute_availability(active_port_obj: Option<&Value>, ports: &[Value]) -> bool {
@@ -229,7 +249,10 @@ fn compute_availability(active_port_obj: Option<&Value>, ports: &[Value]) -> boo
 }
 
 fn detect_virtual<'a>(name: &str, prop_str: impl Fn(&str) -> Option<&'a str>) -> bool {
-    if name == VIRTUAL_SINK_NAME || name == VIRTUAL_OUT_NAME {
+    if matches!(
+        name,
+        VIRTUAL_SINK_NAME | VIRTUAL_OUT_NAME | LEGACY_VIRTUAL_SINK_NAME | LEGACY_VIRTUAL_OUT_NAME
+    ) {
         return true;
     }
     if prop_str("node.virtual") == Some("true") {
@@ -348,14 +371,16 @@ mod tests {
                 "index": 73,
                 "name": "alsa_output.pci-0000_03_00.6.HiFi__Speaker__sink",
                 "description": "Generic Laptop Speaker",
+                "sample_specification": "s32le 2ch 44100Hz",
                 "properties": { "device.bus": "pci", "device.icon_name": "audio-speakers" },
                 "ports": [{ "name": "[Out] Speaker", "type": "Speaker", "availability": "availability unknown" }],
                 "active_port": "[Out] Speaker"
             },
             {
                 "index": 2884,
-                "name": "dolby_atmos_rust",
-                "description": "Dolby Atmos Rust",
+                "name": "opendolby_speaker",
+                "description": "OpenDolby Speaker",
+                "sample_specification": "float32le 2ch 48000Hz",
                 "properties": { "node.virtual": "true" },
                 "ports": [],
                 "active_port": null
@@ -368,15 +393,18 @@ mod tests {
         assert_eq!(devices[0].kind, DeviceKind::Hdmi);
         assert!(!devices[0].is_internal_speaker);
         assert!(!devices[0].available);
+        assert_eq!(devices[0].sample_rate, 48_000);
 
         assert_eq!(devices[1].kind, DeviceKind::InternalSpeaker);
         assert!(devices[1].is_internal_speaker);
         assert!(devices[1].available);
         assert!(!devices[1].is_virtual);
+        assert_eq!(devices[1].sample_rate, 44_100);
 
         assert_eq!(devices[2].kind, DeviceKind::Virtual);
         assert!(devices[2].is_virtual);
         assert!(!devices[2].is_internal_speaker);
+        assert_eq!(devices[2].sample_rate, 48_000);
 
         let chosen = choose_internal_speaker(&devices, None).unwrap();
         assert_eq!(chosen.id, 73);

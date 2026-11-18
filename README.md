@@ -5,7 +5,7 @@
 </div>
 
 > [!WARNING]
-> **实验性项目声明**：OpenDolby 基于本机硬件调音 XML 进行净室（Clean-room）工程实现，**不是**杜比官方软件、**不是** Dolby Atmos 解码器，也不保证与 Windows APO 逐比特一致。源码尚未指定开源许可证，请勿将其视为官方或认证实现。
+> **实验性项目声明**：OpenDolby 基于本机硬件调音 XML 进行净室（Clean-room）工程实现，**不是**杜比官方软件、**不是** Dolby Atmos 解码器，也不保证与 Windows APO 逐比特一致。源码采用 `MIT OR Apache-2.0` 双许可开源，请勿将其视为官方或认证实现。
 
 ---
 
@@ -26,12 +26,12 @@
 
 ## 核心功能
 
-- **预设与实时切换**：支持动态、游戏、电影、音乐、人声、三组自定义及关闭音效，支持实时切换与基准重置（Reset to baseline）。引擎可读取 XML 中全部 10 个配置，额外的 `voice_onlinecourse` 可通过 CLI `--profile voice_onlinecourse` 启用。
+- **预设与平滑切换**：支持动态、游戏、电影、音乐、人声、三组自定义及关闭音效，切换预设时执行 20 ms 无爆音交叉淡变，并支持基准重置（Reset to baseline）。引擎可读取 XML 中全部 10 个配置，额外的 `voice_onlinecourse` 可通过 CLI `--profile voice_onlinecourse` 启用。
 - **实时空间与对白调节**：提供 `Surround` 与 `Dialog` 平滑增益滑块（`0.0` ~ `2.0`，`1.0` 为当前预设近似基准；若 XML 禁用对应效果则滑块不会强行开启）。空间声场采用 M/S 展宽与延时交叉馈送，而非基于对象的 Atmos 渲染。
-- **电平匹配 A/B 对比（Processed / Bypass）**：在同一虚拟 Sink 内并行运行两条路径，切换时执行 20 ms 交叉淡变。默认开启近似电学 RMS 匹配（仅通过衰减对齐较安静的一侧，约需 1–2 秒稳定，并非响度/LUFS 标准化）。
+- **电平匹配 A/B 对比（Processed / Bypass）**：在同一虚拟 Sink（`OpenDolby Speaker` / `opendolby_speaker`）内并行运行两条路径，切换时执行 20 ms 交叉淡变。默认开启近似电学 RMS 匹配（仅通过衰减对齐较安静的一侧，约需 1–2 秒稳定，并非响度/LUFS 标准化）。
 - **Off 直通模式**：独立的纯平直通，**不保留扬声器保护 DSP**（笔记本内置扬声器请勿用于高音量低频测试）。
-- **设备发现与安全路由**：在 **Output Devices / 输出设备** 页面查看设备状态、切换虚拟输出并支持安全恢复原默认输出；启动与运行时每 2 秒自动识别设备并仅选定安全内置扬声器目标，不会自动给耳机、USB、蓝牙或 HDMI 设备套用扬声器调音。单实例通信仅限本用户私有目录与 Unix socket，不开启网络端口。
-- **设置页与本地偏好保存**：在 **Settings / 设置** 页面切换浅色、深色或跟随系统主题，并通过原生文件选择器选取或重载本机调音 XML（引擎运行时需先停止再切换/重载）；主题与 XML 路径偏好保存至 `~/.config/opendolby/ui.json`（遵循 `XDG_CONFIG_HOME`）。
+- **设备发现与安全路由**：在 **Output Devices / 输出设备** 页面查看设备状态、切换虚拟输出并支持安全恢复原默认输出；启动与运行时每 2 秒自动识别设备并仅选定安全内置扬声器目标（自动对齐 44.1 / 48 kHz 采样率），不会自动给耳机、USB、蓝牙或 HDMI 设备套用扬声器调音。单实例通信仅限本用户私有目录与 Unix socket，不开启网络端口。
+- **设置页与完整偏好持久化**：在 **Settings / 设置** 页面切换浅色、深色或跟随系统主题，并通过原生文件选择器选取或重载本机调音 XML（引擎运行时需先停止再切换/重载）；主题、设备策略、XML 路径以及当前预设、`Surround`/`Dialog` 滑块与电平匹配状态均自动保存至 `~/.config/opendolby/ui.json`（遵循 `XDG_CONFIG_HOME`）。
 
 ## 硬件兼容性
 
@@ -59,6 +59,10 @@ OpenDolby 仅支持 **Linux + PipeWire**，**不支持** macOS 或 Windows。
   sudo apt install gcc g++ clang pkg-config libpipewire-0.3-dev pulseaudio-utils libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libvulkan1
   ```
 
+### 准备本机调音 XML
+
+OpenDolby 不内置厂商调音文件。首次运行前，请参考 [docs/finding-tuning-xml.md](docs/finding-tuning-xml.md) 从本机 Windows 驱动目录定位匹配 PCI Subsystem ID 的 XML，并放置到 `~/.config/opendolby/tuning.xml`（或启动后在 **设置** 页面手动选择）。
+
 ### 编译与运行
 
 ```sh
@@ -73,17 +77,20 @@ cargo build --release --locked --bins
 关闭面板窗口不会停止音效，音频处理与输出路由会继续在后台运行。再次打开 `dolby-gui` 会复用同一实例并保留当前模式；也可以在终端直接控制：
 
 ```sh
-dolby-gui --devices # 查看实际输出设备与可用性（JSON，不启动窗口）
-dolby-gui --status  # 查看后台实例、引擎状态与当前模式（JSON）
-dolby-gui --start   # 启动音频引擎，没有实例时打开面板并启动
-dolby-gui --stop    # 停止引擎并移除虚拟输出
-dolby-gui --quit    # 停止引擎并退出整个后台实例
+dolby-gui --devices              # 查看实际输出设备与可用性（JSON，不启动窗口）
+dolby-gui --status               # 查看后台实例、引擎状态与当前模式（JSON）
+dolby-gui --start                # 启动音频引擎，没有实例时打开面板并启动
+dolby-gui --start --background   # 静默后台启动引擎（适合登录自启，不弹出窗口）
+dolby-gui --stop                 # 停止引擎并移除虚拟输出
+dolby-gui --quit                 # 停止引擎并退出整个后台实例
 ```
 
-### 可选：安装桌面入口与异常恢复
+### 可选：一键安装桌面入口、开机自启与异常恢复
 
 ```sh
-install -Dm755 target/release/dolby-gui "$HOME/.local/bin/dolby-gui"
+./scripts/install.sh                     # 安装二进制、应用启动器、图标与 systemd 用户单元
+./scripts/install.sh --enable-autostart  # 同时启用桌面登录静默后台自启
+./scripts/install.sh --uninstall         # 卸载全部用户目录安装文件
 ```
 
 如果程序异常退出导致默认输出仍停留在虚拟设备上，可重新打开 `dolby-gui` 并点击停止引擎，或使用 PipeWire 命令手动恢复：
@@ -131,7 +138,7 @@ python3 tools/smoke_gui_lifecycle.py --confirm-route-test
 
 ## 许可与致谢
 
-- **项目源码**：当前仓库尚未指定开源许可证。
+- **项目源码**：采用 `MIT OR Apache-2.0` 双许可证授权，详见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)。
 - **第三方图标**：捆绑的 Lucide SVG 图标依据 ISC / MIT 协议单独许可，完整许可文本见 [assets/icons/LICENSE](assets/icons/LICENSE)。
 - **项目标识**：独立 OpenDolby 标识见 [assets/opendolby.svg](assets/opendolby.svg)、[assets/opendolby.png](assets/opendolby.png) 与 [assets/opendolby-app.svg](assets/opendolby-app.svg)，不使用杜比官方双 D 标识。
 - **社区与技术参考**：设备发现与按设备绑定的思路参考了 `speaker-tuning-to-easyeffects` 与 EasyEffects（仅借鉴工程思路，未复制 GPL 代码，也不继承上游机型支持列表）；DSP 与 UI 参考了 W3C Audio EQ Cookbook (Robert Bristow-Johnson)、GPUI-Kit 与 PipeWire API。

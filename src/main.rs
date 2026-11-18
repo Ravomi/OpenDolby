@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "dolby-rs",
-    about = "Rust Dolby DAX3 DSP engine for Linux PipeWire"
+    about = "Experimental Linux PipeWire speaker DSP engine (OpenDolby)"
 )]
 struct Cli {
     #[arg(long)]
@@ -44,7 +44,7 @@ enum Commands {
         #[arg(long, default_value_t = 1.0)]
         dialog: f32,
     },
-    /// Run live PipeWire virtual sink ("Dolby Atmos Rust (ALC294)")
+    /// Run live PipeWire virtual sink ("OpenDolby Speaker")
     Run {
         #[arg(long, default_value = "dynamic")]
         profile: String,

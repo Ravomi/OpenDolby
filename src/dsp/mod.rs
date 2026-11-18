@@ -184,7 +184,7 @@ impl DolbyProcessor {
             return;
         }
 
-        for frame in samples.chunks_exact_mut(2) {
+        for frame in samples.as_chunks_mut::<2>().0 {
             let dry = (
                 if frame[0].is_finite() {
                     frame[0].clamp(-16.0, 16.0)
@@ -245,6 +245,83 @@ impl DolbyProcessor {
     }
 }
 
+const DECK_CHUNK_FLOATS: usize = 512;
+
+/// Wraps [`DolbyProcessor`] to perform a 20 ms linear crossfade when hot-swapping presets,
+/// avoiding filter-state reset clicks while allocating zero heap memory on the audio path.
+pub struct ProcessorDeck {
+    active: DolbyProcessor,
+    outgoing: Option<DolbyProcessor>,
+    retired: Option<DolbyProcessor>,
+    fade_pos: usize,
+    fade_frames: usize,
+}
+
+impl ProcessorDeck {
+    pub fn new(active: DolbyProcessor, sample_rate: u32) -> Self {
+        let fade_frames = ((sample_rate as usize) / 50).max(1);
+        Self {
+            active,
+            outgoing: None,
+            retired: None,
+            fade_pos: fade_frames,
+            fade_frames,
+        }
+    }
+
+    /// Initiate a 20 ms crossfade to `next`. Intended to be called from the control timer,
+    /// where dropping any retired processor is off the audio callback.
+    pub fn swap(&mut self, next: DolbyProcessor) {
+        self.retired = None;
+        let prev = std::mem::replace(&mut self.active, next);
+        self.outgoing = Some(prev);
+        self.fade_pos = 0;
+    }
+
+    /// Drop any processor that finished crossfading so deallocation stays off the audio path.
+    pub fn reap_retired(&mut self) {
+        self.retired = None;
+    }
+
+    #[inline]
+    pub fn process_interleaved(&mut self, controls: RuntimeControls, samples: &mut [f32]) {
+        self.active.set_controls(controls);
+        let Some(mut old) = self.outgoing.take() else {
+            self.active.process_interleaved(samples);
+            return;
+        };
+        old.set_controls(controls);
+
+        for chunk in samples.chunks_mut(DECK_CHUNK_FLOATS) {
+            if self.fade_pos >= self.fade_frames {
+                self.active.process_interleaved(chunk);
+                continue;
+            }
+            let mut old_buf = [0.0_f32; DECK_CHUNK_FLOATS];
+            let n = chunk.len();
+            old_buf[..n].copy_from_slice(chunk);
+            old.process_interleaved(&mut old_buf[..n]);
+            self.active.process_interleaved(chunk);
+
+            let inv_len = 1.0 / (self.fade_frames as f32);
+            for (i, frame) in chunk.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+                let alpha = ((self.fade_pos as f32) * inv_len).min(1.0);
+                frame[0] = old_buf[i * 2] * (1.0 - alpha) + frame[0] * alpha;
+                frame[1] = old_buf[i * 2 + 1] * (1.0 - alpha) + frame[1] * alpha;
+                if self.fade_pos < self.fade_frames {
+                    self.fade_pos += 1;
+                }
+            }
+        }
+
+        if self.fade_pos >= self.fade_frames {
+            self.retired = Some(old);
+        } else {
+            self.outgoing = Some(old);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +367,81 @@ mod tests {
         let mut off_out = low.clone();
         proc_off.process_interleaved(&mut off_out);
         assert_eq!(off_out, low);
+    }
+
+    #[test]
+    fn processor_deck_crossfades_preset_swap_without_step_click() {
+        use crate::tuning::{CpTuning, ProfileTuning, VlldpTuning};
+
+        let make_profile = |name: &str, postgain_db: f32| ProfileTuning {
+            name: name.to_string(),
+            cp: CpTuning {
+                dialog_enhancer_enable: false,
+                dialog_enhancer_amount: 0.0,
+                ieq_enable: false,
+                ieq_amount: 0.0,
+                ieq_target_db: vec![0.0; 20],
+                geq_enable: false,
+                geq_db: vec![0.0; 20],
+                volume_leveler_enable: false,
+                volume_leveler_amount: 0.0,
+                volume_leveler_in_target_db: -20.0,
+                volume_leveler_out_target_db: -20.0,
+                surround_decoder_enable: false,
+                surround_virtualizer_enable: false,
+                surround_boost_db: 0.0,
+                pregain_db: 0.0,
+                postgain_db,
+            },
+            vlldp: VlldpTuning {
+                audio_optimizer_enable: false,
+                audio_optimizer_ch0_db: vec![0.0; 20],
+                audio_optimizer_ch1_db: vec![0.0; 20],
+                speaker_peq_enable: false,
+                speaker_peq_filters: Vec::new(),
+                mb_compressor_enable: false,
+                mb_compressor_groups: Vec::new(),
+                regulator_speaker_dist_enable: false,
+                regulator_threshold_high_db: vec![0.0; 20],
+                regulator_threshold_low_db: vec![-12.0; 20],
+                postgain_db: 0.0,
+                system_gain_db: 0.0,
+            },
+        };
+
+        let freqs = [100.0_f32; 20];
+        let controls = RuntimeControls {
+            level_match: false,
+            ..RuntimeControls::default()
+        };
+        let proc_quiet = DolbyProcessor::new(&make_profile("quiet", -18.0), &freqs, 48_000.0);
+        let proc_off = DolbyProcessor::new(&make_profile("off", 0.0), &freqs, 48_000.0);
+
+        let mut deck = ProcessorDeck::new(proc_quiet, 48_000);
+        // Constant DC-like test signal of 0.4 to detect instantaneous step discontinuities
+        let mut pre = vec![0.4_f32; 512];
+        deck.process_interleaved(controls, &mut pre);
+        let last_before_swap = pre[pre.len() - 2];
+
+        deck.swap(proc_off);
+        let mut fade_buf = vec![0.4_f32; 2400]; // 1200 stereo frames (> 960-frame 20ms crossfade)
+        deck.process_interleaved(controls, &mut fade_buf);
+
+        // First sample after swap must start at outgoing level (alpha = 0), not jump by ~0.35
+        assert!((fade_buf[0] - last_before_swap).abs() < 0.01);
+        // Sample-to-sample delta across the entire crossfade must remain tiny
+        let max_step = fade_buf
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|f| f[0])
+            .collect::<Vec<_>>()
+            .windows(2)
+            .map(|w| (w[1] - w[0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(max_step < 0.005, "unexpected step jump: {max_step}");
+        // After 960 frames, output must have settled cleanly onto incoming "off" (0.4)
+        assert!((fade_buf[fade_buf.len() - 2] - 0.4).abs() < 1e-5);
+        deck.reap_retired();
     }
 }

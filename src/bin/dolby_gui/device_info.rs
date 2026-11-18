@@ -62,6 +62,18 @@ pub(crate) fn resolve_target(
         .map(|d| d.name.clone())
 }
 
+pub(crate) fn supported_engine_rate(outputs: &[OutputDevice], target: Option<&str>) -> u32 {
+    let raw = target
+        .and_then(|name| outputs.iter().find(|d| d.name == name))
+        .map(|d| d.sample_rate)
+        .unwrap_or(48_000);
+    if raw == 44_100 {
+        44_100
+    } else {
+        48_000
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +90,7 @@ mod tests {
             id: 1,
             name: name.to_string(),
             description: name.to_string(),
+            sample_rate: 48_000,
             is_virtual,
             is_internal_speaker,
             available,

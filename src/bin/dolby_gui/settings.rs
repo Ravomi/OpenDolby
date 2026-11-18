@@ -35,6 +35,10 @@ impl DolbyGui {
             auto_target: self.auto_target,
             manual_target: self.target_sink.clone(),
             xml_path: Some(self.xml_path.clone()),
+            profile: self.active_profile.clone(),
+            level_match: self.level_match,
+            surround_amount: self.surround_amount,
+            dialog_amount: self.dialog_amount,
         };
         self.settings_error = preferences.save().err().map(|error| format!("{error:#}"));
     }

@@ -1,4 +1,5 @@
-use crate::dsp::{DolbyProcessor, RuntimeControls};
+use crate::audio_devices::{VIRTUAL_OUT_NAME, VIRTUAL_SINK_NAME};
+use crate::dsp::{DolbyProcessor, ProcessorDeck, RuntimeControls};
 use anyhow::{anyhow, Context, Result};
 use pipewire as pw;
 use pw::properties::properties;
@@ -12,8 +13,6 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-const VIRTUAL_SINK_NAME: &str = "dolby_atmos_rust";
-const VIRTUAL_OUT_NAME: &str = "dolby_atmos_rust_out";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Bounded ring buffer for interleaved stereo f32 frames (serialized via Rc<RefCell> on the PipeWire mainloop).
@@ -145,7 +144,7 @@ impl Drop for EngineHandle {
     }
 }
 
-/// Detect the hardware internal speaker sink node.name so dolby_atmos_rust_out never loops back to itself.
+/// Detect the hardware internal speaker sink node.name so opendolby_speaker_out never loops back to itself.
 pub fn detect_hardware_speaker_sink() -> Option<String> {
     let inventory = crate::audio_devices::discover_outputs().ok()?;
     crate::audio_devices::choose_internal_speaker(&inventory.outputs, None)
@@ -274,14 +273,14 @@ fn run_pipewire_sink_inner(
     // (RT_PROCESS is intentionally omitted), so Rc<RefCell<...>> is sound.
     // 16384 stereo frames = 32768 f32 samples (~341ms @ 48kHz).
     let ring = Rc::new(RefCell::new(RingBuf::new(32768)));
-    let proc_state = Rc::new(RefCell::new(processor));
+    let proc_state = Rc::new(RefCell::new(ProcessorDeck::new(processor, sample_rate)));
 
     let in_props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
         *pw::keys::MEDIA_CATEGORY => "Playback",
         *pw::keys::MEDIA_CLASS => "Audio/Sink",
         *pw::keys::NODE_NAME => VIRTUAL_SINK_NAME,
-        *pw::keys::NODE_DESCRIPTION => "Dolby Atmos Rust",
+        *pw::keys::NODE_DESCRIPTION => "OpenDolby Speaker",
         "application.name" => "OpenDolby",
         "application.icon-name" => "opendolby-app",
         "media.icon-name" => "opendolby-app",
@@ -290,7 +289,7 @@ fn run_pipewire_sink_inner(
         "node.virtual" => "true",
     };
 
-    let in_stream = pw::stream::StreamBox::new(&core, "dolby-rs-sink", in_props)
+    let in_stream = pw::stream::StreamBox::new(&core, "opendolby-sink", in_props)
         .context("Failed to create PipeWire virtual sink stream")?;
 
     let mut out_props = properties! {
@@ -309,7 +308,7 @@ fn run_pipewire_sink_inner(
     };
     out_props.insert("target.object", resolved_target.as_str());
 
-    let out_stream = pw::stream::StreamBox::new(&core, "dolby-rs-out", out_props)
+    let out_stream = pw::stream::StreamBox::new(&core, "opendolby-out", out_props)
         .context("Failed to create PipeWire output stream")?;
 
     let ring_in = Rc::clone(&ring);
@@ -345,20 +344,19 @@ fn run_pipewire_sink_inner(
             let live_controls = controls_in.snapshot();
 
             let mut proc = proc_in.borrow_mut();
-            proc.set_controls(live_controls);
 
-            if (byte_slice.as_ptr() as usize) % std::mem::align_of::<f32>() == 0 {
+            if (byte_slice.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
                 let samples: &mut [f32] = unsafe {
                     std::slice::from_raw_parts_mut(byte_slice.as_mut_ptr() as *mut f32, n_floats)
                 };
-                proc.process_interleaved(samples);
+                proc.process_interleaved(live_controls, samples);
                 ring_in.borrow_mut().push_slice(samples);
             } else {
                 let mut scratch = vec![0.0_f32; n_floats];
-                for (dst, src) in scratch.iter_mut().zip(byte_slice.chunks_exact(4)) {
-                    *dst = f32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+                for (dst, src) in scratch.iter_mut().zip(byte_slice.as_chunks::<4>().0) {
+                    *dst = f32::from_le_bytes(*src);
                 }
-                proc.process_interleaved(&mut scratch);
+                proc.process_interleaved(live_controls, &mut scratch);
                 ring_in.borrow_mut().push_slice(&scratch);
             }
         })
@@ -387,7 +385,7 @@ fn run_pipewire_sink_inner(
                 return;
             }
             let n_floats = n_frames * 2;
-            if (slice.as_ptr() as usize) % std::mem::align_of::<f32>() == 0 {
+            if (slice.as_ptr() as usize).is_multiple_of(std::mem::align_of::<f32>()) {
                 let out: &mut [f32] = unsafe {
                     std::slice::from_raw_parts_mut(slice.as_mut_ptr() as *mut f32, n_floats)
                 };
@@ -402,7 +400,9 @@ fn run_pipewire_sink_inner(
                     scratch[read..].fill(0.0);
                 }
                 for (dst, src) in slice[..n_frames * frame_bytes]
-                    .chunks_exact_mut(4)
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
                     .zip(scratch.iter())
                 {
                     dst.copy_from_slice(&src.to_le_bytes());
@@ -456,9 +456,10 @@ fn run_pipewire_sink_inner(
     let mainloop_weak = mainloop.downgrade();
     let proc_timer = Rc::clone(&proc_state);
     let _control_timer = mainloop.loop_().add_timer(move |_| {
+        proc_timer.borrow_mut().reap_retired();
         if let Ok(mut guard) = pending_proc.try_lock() {
             if let Some(new_proc) = guard.take() {
-                *proc_timer.borrow_mut() = new_proc;
+                proc_timer.borrow_mut().swap(new_proc);
             }
         }
         if quit.load(Ordering::Relaxed) {
@@ -476,8 +477,8 @@ fn run_pipewire_sink_inner(
         let _ = tx.send(Ok(()));
     } else {
         println!(
-            "PipeWire virtual sink 'Dolby Atmos Rust (ALC294)' active (rate={} Hz). Ctrl+C to stop.",
-            sample_rate
+            "PipeWire virtual sink 'OpenDolby Speaker' ({}) active (rate={} Hz). Ctrl+C to stop.",
+            VIRTUAL_SINK_NAME, sample_rate
         );
     }
 

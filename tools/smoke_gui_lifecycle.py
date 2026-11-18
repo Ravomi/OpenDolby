@@ -62,7 +62,7 @@ def main():
         return json.loads(run(binary, "--status"))
 
     initial = status()
-    if initial.get("pid") or "dolby_atmos_rust" in run("pactl", "list", "short", "sinks"):
+    if initial.get("pid") or "opendolby_speaker" in run("pactl", "list", "short", "sinks"):
         raise SystemExit("Quit the existing OpenDolby instance before this test")
     original_default = run("pactl", "get-default-sink")
     output = Path("target/acceptance")
@@ -78,15 +78,15 @@ def main():
         assert pid == child.pid, "The test must own the GUI process"
         run(binary, "--start")
         wait_for(lambda: status().get("running"), "engine start")
-        wait_for(lambda: "dolby_atmos_rust" in run("pactl", "list", "short", "sinks"),
+        wait_for(lambda: "opendolby_speaker" in run("pactl", "list", "short", "sinks"),
                  "virtual sink")
-        run("pactl", "set-default-sink", "dolby_atmos_rust")
+        run("pactl", "set-default-sink", "opendolby_speaker")
 
         close_panel(pid)
         closed = wait_for(lambda: (s if not (s := status()).get("window_open") else None),
                           "panel closure")
         assert closed["running"] and closed["pid"] == pid, "Closing must keep the engine alive"
-        assert run("pactl", "get-default-sink") == "dolby_atmos_rust", "Closing changed output"
+        assert run("pactl", "get-default-sink") == "opendolby_speaker", "Closing changed output"
         report["close_keeps_engine_and_route"] = True
 
         run(binary)
@@ -95,25 +95,25 @@ def main():
         assert reopened["pid"] == pid and reopened["running"], "Reopen must reuse the live engine"
         assert reopened["profile"] == opened["profile"], "Reopen lost the active profile"
         sinks = run("pactl", "list", "short", "sinks").splitlines()
-        assert sum(line.split()[1] == "dolby_atmos_rust" for line in sinks) == 1
+        assert sum(line.split()[1] == "opendolby_speaker" for line in sinks) == 1
         report["reopen_reuses_pid_profile_and_single_sink"] = True
 
         run(binary, "--stop")
         wait_for(lambda: not status().get("running"), "explicit stop")
-        wait_for(lambda: "dolby_atmos_rust" not in run("pactl", "list", "short", "sinks"),
+        wait_for(lambda: "opendolby_speaker" not in run("pactl", "list", "short", "sinks"),
                  "virtual sink removal")
-        assert run("pactl", "get-default-sink") != "dolby_atmos_rust", "Stop did not restore hardware"
+        assert run("pactl", "get-default-sink") != "opendolby_speaker", "Stop did not restore hardware"
         report["explicit_stop_restores_hardware"] = True
 
         run(binary, "--start")
         wait_for(lambda: status().get("running"), "engine restart for user-default check")
-        wait_for(lambda: "dolby_atmos_rust" in run("pactl", "list", "short", "sinks"),
+        wait_for(lambda: "opendolby_speaker" in run("pactl", "list", "short", "sinks"),
                  "virtual sink for user-default check")
-        run("pactl", "set-default-sink", "dolby_atmos_rust")
+        run("pactl", "set-default-sink", "opendolby_speaker")
         run("pactl", "set-default-sink", original_default)
         run(binary, "--stop")
         wait_for(lambda: not status().get("running"), "stop after user default change")
-        wait_for(lambda: "dolby_atmos_rust" not in run("pactl", "list", "short", "sinks"),
+        wait_for(lambda: "opendolby_speaker" not in run("pactl", "list", "short", "sinks"),
                  "virtual sink removal after user default change")
         assert run("pactl", "get-default-sink") == original_default, "Stop overwrote user-selected default sink"
         report["stop_preserves_user_default_sink"] = True

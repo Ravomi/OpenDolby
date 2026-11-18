@@ -8,12 +8,16 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct Preferences {
     pub theme: ThemePreference,
     pub auto_target: bool,
     pub manual_target: Option<String>,
     pub xml_path: Option<PathBuf>,
+    pub profile: String,
+    pub level_match: bool,
+    pub surround_amount: f32,
+    pub dialog_amount: f32,
 }
 impl Default for Preferences {
     fn default() -> Self {
@@ -22,6 +26,10 @@ impl Default for Preferences {
             auto_target: true,
             manual_target: None,
             xml_path: None,
+            profile: "dynamic".to_string(),
+            level_match: true,
+            surround_amount: 1.0,
+            dialog_amount: 1.0,
         }
     }
 }
@@ -81,11 +89,37 @@ impl Preferences {
                 _ => bail!("{key} 应为不含控制字符的路径或名称"),
             }
         };
+        let profile = optional_string("profile")?.unwrap_or_else(|| "dynamic".to_string());
+        let level_match = match data.get("level_match") {
+            Some(Value::Bool(value)) => *value,
+            None => true,
+            _ => bail!("电平匹配选项应为布尔值"),
+        };
+        let parse_slider = |key: &str| -> Result<f32> {
+            match data.get(key) {
+                None => Ok(1.0),
+                Some(Value::Number(num)) => {
+                    let v = num
+                        .as_f64()
+                        .ok_or_else(|| anyhow::anyhow!("{key} 数值超出范围"))?
+                        as f32;
+                    if !v.is_finite() || !(0.0..=2.0).contains(&v) {
+                        bail!("{key} 应在 0.0 到 2.0 之间");
+                    }
+                    Ok((v * 100.0).round() / 100.0)
+                }
+                _ => bail!("{key} 应为 0.0 到 2.0 之间的数字"),
+            }
+        };
         Ok(Self {
             theme,
             auto_target,
             manual_target: optional_string("manual_target")?,
             xml_path: optional_string("xml_path")?.map(PathBuf::from),
+            profile,
+            level_match,
+            surround_amount: parse_slider("surround_amount")?,
+            dialog_amount: parse_slider("dialog_amount")?,
         })
     }
 
@@ -105,9 +139,17 @@ impl Preferences {
             .filter(|value| !value.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).context("无法创建设置目录")?;
-        let data = json!({ "version": 1, "theme": self.theme.as_str(),
-            "auto_target": self.auto_target, "manual_target": self.manual_target,
-            "xml_path": self.xml_path });
+        let data = json!({
+            "version": 1,
+            "theme": self.theme.as_str(),
+            "auto_target": self.auto_target,
+            "manual_target": self.manual_target,
+            "xml_path": self.xml_path,
+            "profile": self.profile,
+            "level_match": self.level_match,
+            "surround_amount": (self.surround_amount * 100.0).round() / 100.0,
+            "dialog_amount": (self.dialog_amount * 100.0).round() / 100.0,
+        });
         let temp = parent.join(format!(
             ".opendolby-ui-{}-{}.tmp",
             std::process::id(),
@@ -151,6 +193,9 @@ mod tests {
         assert!(Preferences::from_json(r#"{"version":"1"}"#).is_err());
         assert!(Preferences::from_json(r#"{"auto_target":"true"}"#).is_err());
         assert!(Preferences::from_json(r#"{"manual_target":"bad\nname"}"#).is_err());
+        assert!(Preferences::from_json(r#"{"level_match":"yes"}"#).is_err());
+        assert!(Preferences::from_json(r#"{"surround_amount":2.5}"#).is_err());
+        assert!(Preferences::from_json(r#"{"dialog_amount":-0.1}"#).is_err());
     }
     #[test]
     fn preferences_round_trip_without_storing_tuning_contents() {
@@ -168,6 +213,10 @@ mod tests {
             auto_target: false,
             manual_target: Some("alsa_output.speaker".into()),
             xml_path: Some(PathBuf::from("/local/OEM tuning.xml")),
+            profile: "movie".into(),
+            level_match: false,
+            surround_amount: 1.35,
+            dialog_amount: 0.85,
         };
         assert_eq!(
             Preferences::load_from(&path).unwrap(),

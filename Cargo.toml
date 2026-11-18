@@ -2,7 +2,12 @@
 name = "dolby-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Clean-room Rust Dolby DAX3 DSP port for Linux PipeWire, tuned from local hardware XML"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Ravomi/OpenDolby"
+readme = "README.md"
+description = "Experimental clean-room Linux PipeWire speaker DSP and GPUI-Kit control panel"
+keywords = ["audio", "dsp", "pipewire", "linux", "gpui"]
+categories = ["multimedia::audio", "gui"]
 
 [dependencies]
 anyhow = "1"

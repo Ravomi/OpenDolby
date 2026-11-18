@@ -16,7 +16,9 @@ mod view;
 mod view_pages;
 
 use clap::Parser;
-use dolby_rs::audio_devices::{self, DeviceInventory, OutputDevice};
+use dolby_rs::audio_devices::{
+    self, DeviceInventory, OutputDevice, VIRTUAL_SINK_NAME as VIRTUAL_SINK,
+};
 use dolby_rs::default_xml_path;
 use dolby_rs::dsp::DolbyProcessor;
 use dolby_rs::pw_sink::{spawn_pipewire_sink, EngineHandle};
@@ -53,9 +55,10 @@ struct GuiArgs {
     /// Stop the Dolby audio engine, restore the speaker output, and quit the background instance.
     #[arg(long)]
     quit: bool,
+    /// Do not open a window on launch (used with --start for login autostart / systemd service).
+    #[arg(long)]
+    background: bool,
 }
-
-const VIRTUAL_SINK: &str = "dolby_atmos_rust";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Page {
@@ -77,6 +80,7 @@ struct DolbyGui {
     page: Page,
     show_details: bool,
     engine: Option<EngineHandle>,
+    engine_rate: u32,
     bypass: bool,
     level_match: bool,
     surround_amount: f32,
@@ -122,19 +126,26 @@ impl DolbyGui {
             default_sink.as_deref(),
             preferences.auto_target,
         );
+        let engine_rate = device_info::supported_engine_rate(&outputs, target_sink.as_deref());
+        let active_profile = match &tuning {
+            Some(t) if t.profiles.contains_key(&preferences.profile) => preferences.profile.clone(),
+            _ => "dynamic".to_string(),
+        };
+        let initial_surround = preferences.surround_amount.clamp(0.0, 2.0);
+        let initial_dialog = preferences.dialog_amount.clamp(0.0, 2.0);
         let surround_slider = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
                 .max(2.0)
                 .step(0.05)
-                .default_value(1.0)
+                .default_value(initial_surround)
         });
         let dialog_slider = cx.new(|_| {
             SliderState::new()
                 .min(0.0)
                 .max(2.0)
                 .step(0.05)
-                .default_value(1.0)
+                .default_value(initial_dialog)
         });
         let sub_surround = cx.subscribe(&surround_slider, |this, _, event: &SliderEvent, cx| {
             if let SliderEvent::Change(val) = event {
@@ -156,14 +167,15 @@ impl DolbyGui {
             hardware_name: device_info::machine_label(),
             settings_error,
             _appearance_subscription: None,
-            active_profile: "dynamic".into(),
+            active_profile,
             page: Page::Sound,
             show_details: false,
             engine: None,
+            engine_rate,
             bypass: false,
-            level_match: true,
-            surround_amount: 1.0,
-            dialog_amount: 1.0,
+            level_match: preferences.level_match,
+            surround_amount: initial_surround,
+            dialog_amount: initial_dialog,
             surround_slider,
             dialog_slider,
             _subscriptions: vec![sub_surround, sub_dialog],
@@ -235,8 +247,8 @@ impl DolbyGui {
                 self.status = "无法启动: 未加载调音文件".into();
                 return;
             };
-            let Some(proc) = DolbyProcessor::from_tuning(tuning, &self.active_profile, 48000)
-            else {
+            let rate = device_info::supported_engine_rate(&self.outputs, Some(target.as_str()));
+            let Some(proc) = DolbyProcessor::from_tuning(tuning, &self.active_profile, rate) else {
                 self.status = format!("未找到配置 '{}'", self.active_profile).into();
                 return;
             };
@@ -245,8 +257,9 @@ impl DolbyGui {
                     .iter()
                     .any(|device| device.name == *name && !device.is_virtual && device.available)
             });
-            match spawn_pipewire_sink(proc, Some(target.clone()), 48000) {
+            match spawn_pipewire_sink(proc, Some(target.clone()), rate) {
                 Ok(handle) => {
+                    self.engine_rate = rate;
                     self.apply_live_controls(&handle);
                     self.restore_sink = original_output.or(Some(target));
                     self.engine = Some(handle);
@@ -270,11 +283,12 @@ impl DolbyGui {
     fn select_profile(&mut self, profile: &str) {
         self.active_profile = profile.into();
         self.page = Page::Sound;
+        self.persist_settings();
         if let (Some(tuning), Some(handle)) = (&self.tuning, &self.engine) {
-            if let Some(proc) = DolbyProcessor::from_tuning(tuning, profile, 48000) {
+            if let Some(proc) = DolbyProcessor::from_tuning(tuning, profile, self.engine_rate) {
                 handle.set_processor(proc);
                 self.apply_live_controls(handle);
-                self.status = format!("配置已实时切换 · {}", view::profile(profile).title).into();
+                self.status = format!("配置已平滑切换 · {}", view::profile(profile).title).into();
             }
         } else {
             self.status = "配置已选择，启动引擎后生效".into();
@@ -298,6 +312,7 @@ impl DolbyGui {
         if let Some(handle) = &self.engine {
             handle.set_level_match(enabled);
         }
+        self.persist_settings();
         self.status = if enabled {
             "RMS 匹配已开启，请等待约 1–2 秒稳定".into()
         } else {
@@ -306,15 +321,25 @@ impl DolbyGui {
     }
 
     fn set_surround_amount(&mut self, amount: f32) {
-        self.surround_amount = amount.clamp(0.0, 2.0);
+        let next = amount.clamp(0.0, 2.0);
+        let changed = (self.surround_amount - next).abs() > 1e-4;
+        self.surround_amount = next;
         if let Some(handle) = &self.engine {
             handle.set_surround_amount(self.surround_amount);
         }
+        if changed {
+            self.persist_settings();
+        }
     }
     fn set_dialog_amount(&mut self, amount: f32) {
-        self.dialog_amount = amount.clamp(0.0, 2.0);
+        let next = amount.clamp(0.0, 2.0);
+        let changed = (self.dialog_amount - next).abs() > 1e-4;
+        self.dialog_amount = next;
         if let Some(handle) = &self.engine {
             handle.set_dialog_amount(self.dialog_amount);
+        }
+        if changed {
+            self.persist_settings();
         }
     }
 
@@ -682,6 +707,7 @@ fn main() {
     };
 
     let auto_start = args.start;
+    let background = args.background;
     gpui_kit::application()
         .with_quit_mode(gpui_kit::QuitMode::Explicit)
         .with_assets(assets::application_assets())
@@ -696,9 +722,15 @@ fn main() {
                 });
             }
             cx.set_global(AppState {
-                gui,
+                gui: gui.clone(),
                 _socket_guard: Some(socket_guard),
             });
+
+            if background && !gui.read(cx).is_engine_running() {
+                eprintln!("Background launch aborted: {}", gui.read(cx).status);
+                cx.quit();
+                return;
+            }
 
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty()
@@ -732,7 +764,9 @@ fn main() {
             })
             .detach();
 
-            open_or_activate_window(cx);
+            if !background {
+                open_or_activate_window(cx);
+            }
         });
 }
 
@@ -753,6 +787,7 @@ mod tests {
             id,
             name: name.to_string(),
             description: name.to_string(),
+            sample_rate: 48_000,
             is_virtual,
             is_internal_speaker,
             available,

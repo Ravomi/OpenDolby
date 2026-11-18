@@ -21,8 +21,8 @@ def main():
     if not source.exists():
         raise SystemExit("Run tools/measure_dsp.py first")
     existing = subprocess.check_output(["pactl", "list", "short", "sinks"], text=True)
-    if "dolby_atmos_rust" in existing or "opendolby_test_speaker" in existing:
-        raise SystemExit("Stop the existing Dolby engine before running the isolated test")
+    if "opendolby_speaker" in existing or "dolby_atmos_rust" in existing or "opendolby_test_speaker" in existing:
+        raise SystemExit("Stop the existing OpenDolby engine before running the isolated test")
     default = subprocess.check_output(["pactl", "get-default-sink"], text=True).strip()
     module = subprocess.check_output([
         "pactl", "load-module", "module-null-sink", "sink_name=opendolby_test_speaker",
@@ -39,7 +39,7 @@ def main():
             if engine.poll() is not None:
                 raise RuntimeError("Engine exited, see pipewire-engine.log")
             sinks = subprocess.check_output(["pactl", "list", "short", "sinks"], text=True)
-            if "dolby_atmos_rust" in sinks:
+            if "opendolby_speaker" in sinks:
                 break
             time.sleep(0.1)
         else:
@@ -53,7 +53,7 @@ def main():
         ], stdout=recordlog, stderr=recordlog)
         children.append(recorder)
         time.sleep(0.4)
-        player = subprocess.Popen(["pw-play", "--target", "dolby_atmos_rust", "--volume", "0.1", str(source)], stdout=subprocess.DEVNULL, stderr=log)
+        player = subprocess.Popen(["pw-play", "--target", "opendolby_speaker", "--volume", "0.1", str(source)], stdout=subprocess.DEVNULL, stderr=log)
         children.append(player)
         recorder.wait(timeout=12)
         # PipeWire 1.6.11 pw-cat.c exits the sample-limit branch without setting

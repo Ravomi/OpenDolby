@@ -10,7 +10,7 @@ OpenDolby 当前仍处于实验阶段。**仅在明确识别为本机内置扬�
 
 ## 支持边界说明
 
-- **其他机型**：解析逻辑支持读取标准 OEM 调音 XML，但需要对应机型的本机 XML 与实机测试验证，**不代表已开箱支持**。
+- **其他机型**：解析逻辑支持读取标准 OEM 调音 XML（本机查找方式见 [finding-tuning-xml.md](finding-tuning-xml.md)），但需要对应机型的本机 XML 与实机测试验证，**不代表已开箱支持**。
 - **非内置扬声器**：耳机、USB 声卡、蓝牙音频、HDMI/DP 输出与虚拟 Sink 均不会自动套用扬声器 OEM 调音。
 - **跨平台**：仅支持 Linux + PipeWire，**不支持** macOS 或 Windows。
 

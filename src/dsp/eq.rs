@@ -70,10 +70,16 @@ fn solve(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
         }
         a.swap(col, pivot);
         b.swap(col, pivot);
-        for row in col + 1..b.len() {
-            let factor = a[row][col] / a[col][col];
-            for k in col..b.len() {
-                a[row][k] -= factor * a[col][k];
+        let (top, rest) = a.split_at_mut(col + 1);
+        let pivot_row = &top[col];
+        for (row_idx, row_vals) in rest.iter_mut().enumerate() {
+            let row = col + 1 + row_idx;
+            let factor = row_vals[col] / pivot_row[col];
+            for (val, &piv) in row_vals[col..b.len()]
+                .iter_mut()
+                .zip(&pivot_row[col..b.len()])
+            {
+                *val -= factor * piv;
             }
             b[row] -= factor * b[col];
         }

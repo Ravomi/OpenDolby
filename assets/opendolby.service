@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenDolby PipeWire Speaker DSP Background Instance
+Documentation=https://github.com/Ravomi/OpenDolby
+After=graphical-session.target pipewire.service pipewire-pulse.service wireplumber.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/dolby-gui --start --background
+ExecStop=%h/.local/bin/dolby-gui --quit
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target
