@@ -15,40 +15,63 @@ use std::time::Duration;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+const PREBUFFER_FLOATS: usize = 2048;
+
 /// Bounded ring buffer for interleaved stereo f32 frames (serialized via Rc<RefCell> on the PipeWire mainloop).
 struct RingBuf {
     buf: Vec<f32>,
     cap: usize,
     head: AtomicUsize,
     tail: AtomicUsize,
+    prebuffer: usize,
+    primed: bool,
 }
 
 impl RingBuf {
+    #[allow(dead_code)]
     fn new(cap: usize) -> Self {
+        Self::with_prebuffer(cap, 0)
+    }
+
+    fn with_prebuffer(cap: usize, prebuffer: usize) -> Self {
         Self {
             buf: vec![0.0; cap],
             cap,
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
+            prebuffer,
+            primed: prebuffer == 0,
         }
     }
 
     fn push_slice(&mut self, data: &[f32]) {
         let mut h = self.head.load(Ordering::Relaxed);
         let t = self.tail.load(Ordering::Acquire);
-        let avail = self.cap - 1 - ((h + self.cap - t) % self.cap);
+        let used = (h + self.cap - t) % self.cap;
+        let avail = self.cap - 1 - used;
         let n = (data.len().min(avail) / 2) * 2;
         for &s in &data[..n] {
             self.buf[h] = s;
             h = (h + 1) % self.cap;
         }
         self.head.store(h, Ordering::Release);
+        if !self.primed && used + n >= self.prebuffer {
+            self.primed = true;
+        }
     }
 
     fn pop_slice(&mut self, out: &mut [f32]) -> usize {
+        if !self.primed {
+            return 0;
+        }
         let h = self.head.load(Ordering::Acquire);
         let mut t = self.tail.load(Ordering::Relaxed);
         let avail = (h + self.cap - t) % self.cap;
+        if self.prebuffer > 0 && avail < out.len() {
+            // Underrun: re-prime to avoid repeated 0-sample tearing.
+            self.primed = false;
+            return 0;
+        }
         let n = (out.len().min(avail) / 2) * 2;
         for slot in &mut out[..n] {
             *slot = self.buf[t];
@@ -272,7 +295,7 @@ fn run_pipewire_sink_inner(
     // Non-hard-RT: stream callbacks are serialized on the PipeWire mainloop thread
     // (RT_PROCESS is intentionally omitted), so Rc<RefCell<...>> is sound.
     // 16384 stereo frames = 32768 f32 samples (~341ms @ 48kHz).
-    let ring = Rc::new(RefCell::new(RingBuf::new(32768)));
+    let ring = Rc::new(RefCell::new(RingBuf::with_prebuffer(32768, PREBUFFER_FLOATS)));
     let proc_state = Rc::new(RefCell::new(ProcessorDeck::new(processor, sample_rate)));
 
     let in_props = properties! {
@@ -324,6 +347,43 @@ fn run_pipewire_sink_inner(
             if datas.is_empty() {
                 return;
             }
+            if datas.len() >= 2 {
+                // Planar stereo (datas[0] = L, datas[1] = R)
+                let (off0, size0) = {
+                    let c = datas[0].chunk();
+                    (c.offset() as usize, c.size() as usize)
+                };
+                let (off1, size1) = {
+                    let c = datas[1].chunk();
+                    (c.offset() as usize, c.size() as usize)
+                };
+                let (d0, d1) = datas.split_at_mut(1);
+                let (Some(s0), Some(s1)) = (d0[0].data(), d1[0].data()) else {
+                    return;
+                };
+                if off0 >= s0.len() || off1 >= s1.len() || size0 == 0 || size1 == 0 {
+                    return;
+                }
+                let n_frames = (size0.min(s0.len() - off0) / 4).min(size1.min(s1.len() - off1) / 4);
+                if n_frames == 0 {
+                    return;
+                }
+                let mut scratch = vec![0.0_f32; n_frames * 2];
+                for (i, (l_bytes, r_bytes)) in s0[off0..off0 + n_frames * 4]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(s1[off1..off1 + n_frames * 4].as_chunks::<4>().0.iter())
+                    .enumerate()
+                {
+                    scratch[i * 2] = f32::from_le_bytes(*l_bytes);
+                    scratch[i * 2 + 1] = f32::from_le_bytes(*r_bytes);
+                }
+                let live_controls = controls_in.snapshot();
+                proc_in.borrow_mut().process_interleaved(live_controls, &mut scratch);
+                ring_in.borrow_mut().push_slice(&scratch);
+                return;
+            }
             let chunk = datas[0].chunk();
             let offset = chunk.offset() as usize;
             let size = chunk.size() as usize;
@@ -373,6 +433,39 @@ fn run_pipewire_sink_inner(
             let req_frames = buffer.requested();
             let datas = buffer.datas_mut();
             if datas.is_empty() {
+                return;
+            }
+            if datas.len() >= 2 {
+                // Planar stereo output (datas[0] = L, datas[1] = R)
+                let (d0, d1) = datas.split_at_mut(1);
+                let (Some(s0), Some(s1)) = (d0[0].data(), d1[0].data()) else {
+                    return;
+                };
+                let max_frames = (s0.len() / 4).min(s1.len() / 4);
+                let n_frames = select_output_frames(req_frames, max_frames);
+                if n_frames == 0 {
+                    return;
+                }
+                let mut scratch = vec![0.0_f32; n_frames * 2];
+                let read = ring_out.borrow_mut().pop_slice(&mut scratch);
+                if read < scratch.len() {
+                    scratch[read..].fill(0.0);
+                }
+                for (i, (l_dst, r_dst)) in s0[..n_frames * 4]
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(s1[..n_frames * 4].as_chunks_mut::<4>().0.iter_mut())
+                    .enumerate()
+                {
+                    l_dst.copy_from_slice(&scratch[i * 2].to_le_bytes());
+                    r_dst.copy_from_slice(&scratch[i * 2 + 1].to_le_bytes());
+                }
+                for d in [d0[0].chunk_mut(), d1[0].chunk_mut()] {
+                    *d.offset_mut() = 0;
+                    *d.stride_mut() = 4;
+                    *d.size_mut() = (n_frames * 4) as u32;
+                }
                 return;
             }
             let Some(slice) = datas[0].data() else {

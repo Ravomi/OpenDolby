@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenDolby PipeWire Speaker DSP
+After=pipewire.service wireplumber.service
+Requires=pipewire.service
+
+[Service]
+ExecStart=%h/.cargo/bin/dolby-rs run
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
